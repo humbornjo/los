@@ -38,6 +38,9 @@ func newDefaultPattern(source string) *defaultPattern {
 }
 
 func (pat *defaultPattern) match(index int, offset int, buffer []byte) (int, int, bool) {
+	if offset == pat.length {
+		return index, offset, true
+	}
 	n, m := len(buffer), pat.length
 	i, j := index+offset, offset // start match index with offset
 	for i < n {
