@@ -55,7 +55,13 @@ func NewMatcher(pair *Pair) Matcher {
 
 type Matcher interface {
 	// Drain return the remaining unmatched string in the buffer of
-	// matcher, this should only be called after matching is done.
+	// matcher and reset the internal state, this should only be
+	// called after matching is done.
+	//
+	// WARN: Drain must be called for each matcher. It serves the
+	// function of putting back the machine for regex pattern. The
+	// memory allocation gonna be bad otherwise. Just think it as
+	// the Close() function of a file.
 	Drain() string
 	// Match takes a string as input and return a sequence of
 	// Result against the input. There could be 0 or more Result.
@@ -76,13 +82,13 @@ type Result interface {
 	State() State
 	// String is a shortcut for string(Raw())
 	String() string
-	// Matches returns a sequence of matched stringi
+	// Matches returns a sequence of matched string
 	//
 	// For normal pair matches, the returned iterator should be of
 	// length 1 and the value should be the same as String().
 	//
-	// For regex pair matches, the returned iterator will return
-	// all the submatch in the compiled regular expression.
+	// For regex pair matches, the returned iterator will yield all
+	// the submatch in the compiled regular expression.
 	Matches() iter.Seq[string]
 }
 
