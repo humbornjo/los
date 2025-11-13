@@ -8,10 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLos_DefaultMatcher(t *testing.T) {
-	matcher := NewMatcher(
-		NewPair("prologue", "epilogue"),
-	)
+func TestLos_Matcher_Kmp(t *testing.T) {
+	matcher := NewMatcher(NewPair("prologue", "epilogue"))
+	defer matcher.Close() // nolint: errcheck
 
 	tests := []struct {
 		name            string
