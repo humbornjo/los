@@ -2,6 +2,7 @@ package legex
 
 import (
 	"bytes"
+	"math"
 	"regexp/syntax"
 )
 
@@ -19,9 +20,25 @@ func (m *Machine) Match(index int, offset int, buf []byte) (int, int, bool) {
 	// - content in buf before index will be the out-of-pattern string.
 	// - machine will remember the new index, if the index changed in the next match, the collected match index will be
 	//   decreased by the difference as well.
-	index, offset, ok := m.match(input, index, offset)
+	idx, off, ok := m.match(input, index, offset)
+
+	if !ok {
+		shift := math.MaxInt
+		for _, e := range m.q0.dense {
+			if e.t != nil {
+				shift = min(shift, e.t.cap[0]-m.accum)
+			}
+		}
+		if shift == math.MaxInt {
+			m.accum += idx
+			return idx, off, false
+		}
+		m.accum += shift
+		return index + shift, len(buf) - (index + shift), false
+	}
+	m.accum = 0
 	m.matched = false
-	return index, offset, ok
+	return m.matchcap[0], m.matchcap[1] - m.matchcap[0], true
 }
 
 func (m *Machine) Reset() {
@@ -61,6 +78,8 @@ type Machine struct {
 	pool     []*thread    // pool of available threads
 	matched  bool         // whether a match was found
 	matchcap []int        // capture information for the match
+
+	accum int
 }
 
 func (m *Machine) init(ncap int) {
@@ -151,7 +170,7 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 				break
 			}
 
-			m.add(runq, uint32(m.p.Start), index, m.matchcap, &flag, nil)
+			// m.add(runq, uint32(m.p.Start), index, m.matchcap, &flag, nil)
 
 			// When prefix is already been matched, just goto weave
 			if len(m.re.prefix) == 0 || offset == len(m.re.prefix) {
@@ -177,9 +196,9 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 	weave: // When reaching here, sure its in the middle of matching.
 		if !m.matched {
 			if len(m.matchcap) > 0 {
-				m.matchcap[0] = index
+				m.matchcap[0] = index + offset
 			}
-			// m.add(runq, uint32(m.pc), index+offset, m.matchcap, &flag, nil)
+			m.add(runq, uint32(m.p.Start), index+offset, m.matchcap, &flag, nil)
 		}
 		flag = newLazyFlag(r, r1)
 		if width == 0 {
@@ -201,7 +220,7 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 				r1, width1 = i.step(index + width)
 			}
 			flag = newLazyFlag(-1, r)
-			m.add(runq, uint32(m.p.Start), index, m.matchcap, &flag, nil)
+			// m.add(runq, uint32(m.p.Start), index, m.matchcap, &flag, nil)
 			continue
 		}
 
@@ -301,7 +320,7 @@ func (m *Machine) step(runq, nextq *queue, pos, nextPos int, c rune, nextCond *l
 // empty-width conditions satisfied by cond.  pos gives the current position
 // in the input.
 func (m *Machine) add(q *queue, pc uint32, pos int, cap []int, cond *lazyFlag, t *thread) *thread {
-Again:
+again:
 	if pc == 0 {
 		return t
 	}
@@ -325,15 +344,15 @@ Again:
 	case syntax.InstAlt, syntax.InstAltMatch:
 		t = m.add(q, i.Out, pos, cap, cond, t)
 		pc = i.Arg
-		goto Again
+		goto again
 	case syntax.InstEmptyWidth:
 		if cond.match(syntax.EmptyOp(i.Arg)) {
 			pc = i.Out
-			goto Again
+			goto again
 		}
 	case syntax.InstNop:
 		pc = i.Out
-		goto Again
+		goto again
 	case syntax.InstCapture:
 		if int(i.Arg) < len(cap) {
 			opos := cap[i.Arg]
@@ -342,12 +361,12 @@ Again:
 			cap[i.Arg] = opos
 		} else {
 			pc = i.Out
-			goto Again
+			goto again
 		}
 	case syntax.InstMatch:
 		longest := m.re.longest
 		if len(t.cap) > 0 && (!longest || !m.matched || m.matchcap[1] < pos) {
-			t.cap[1] = pos
+			t.cap[0], t.cap[1] = t.cap[0]-m.accum, pos
 			copy(m.matchcap, t.cap)
 		}
 		if !longest {
@@ -364,12 +383,13 @@ Again:
 	case syntax.InstRune, syntax.InstRune1, syntax.InstRuneAny, syntax.InstRuneAnyNotNL:
 		if t == nil {
 			t = m.alloc(i)
+			copy(t.cap, cap)
 		} else {
 			t.inst = i
 		}
-		if len(cap) > 0 && &t.cap[0] != &cap[0] {
-			copy(t.cap, cap)
-		}
+		// if len(cap) > 0 && &t.cap[0] != &cap[0] {
+		// 	copy(t.cap, cap)
+		// }
 		d.t = t
 		t = nil
 	}

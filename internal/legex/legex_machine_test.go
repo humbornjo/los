@@ -57,6 +57,32 @@ func TestMachine_Match_Base(t *testing.T) {
 				{3, 0, false}, // "def" - no match, adcance all
 			},
 		},
+		{
+			name: "long stream with multiple keyword matches",
+			expr: "error|warn|info",
+			inputs: []string{
+				"where there is a info",
+				"there is a warning",
+				"when there is a warning",
+				"you dont give a fuck",
+				"and suddenly an error come up",
+				"warned you had been",
+				"and you dont give a fuck",
+			},
+			expected: []struct {
+				index  int
+				offset int
+				ok     bool
+			}{
+				{17, 4, true},  // First input - partial match "warning" at end
+				{11, 4, true},  // Second input - partial match "warning" at start
+				{19, 4, true},  // Third input - matches "warning"
+				{23, 0, false}, // non-match, just advance all
+				{16, 5, true},  // Fifth input - partial match "Error" at start, then partial "info"
+				{8, 4, true},   // Fifth input - matches "info"
+				{39, 0, false}, // Sixth input - partial match "warning" at end
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -75,9 +101,11 @@ func TestMachine_Match_Base(t *testing.T) {
 
 				idx, off, ok := machine.Match(index, offset, input)
 				expected := tt.expected[i]
-				assert.Equal(t, expected.index, idx, "index mismatch for input %d (%s)", i, inputStr)
-				assert.Equal(t, expected.offset, off, "offset mismatch for input %d (%s)", i, inputStr)
-				assert.Equal(t, expected.ok, ok, "match result mismatch for input %d (%s)", i, inputStr)
+				assert.Equal(t, expected, struct {
+					index  int
+					offset int
+					ok     bool
+				}{idx, off, ok}, "index mismatch for input %d (%s)", i, inputStr)
 
 				if ok { // If match, advance input by the whole pattern and set offset to 0
 					input, index, offset = input[idx+off:], 0, 0
@@ -103,14 +131,14 @@ func TestMachine_Match_Wildcard(t *testing.T) {
 		{
 			name:   "wildcard pattern ab.*c - partial then match",
 			expr:   "ab.*c",
-			inputs: []string{"aaa", "bkkkkkkkkkca"},
+			inputs: []string{"aaa", "bkkkkkkkkca"},
 			expected: []struct {
 				index  int
 				offset int
 				ok     bool
 			}{
 				{2, 1, false}, // "aaa" - no match, advance by 2 with offset 1
-				{0, 12, true}, // "bkkkkkkkkkca" - matches "ab.*c" pattern
+				{0, 11, true}, // "bkkkkkkkkkca" - matches "ab.*c" pattern
 			},
 		},
 		{
@@ -157,9 +185,11 @@ func TestMachine_Match_Wildcard(t *testing.T) {
 
 				idx, off, ok := machine.Match(index, offset, input)
 				expected := tt.expected[i]
-				assert.Equal(t, expected.index, idx, "index mismatch for input %d (%s)", i, inputStr)
-				assert.Equal(t, expected.offset, off, "offset mismatch for input %d (%s)", i, inputStr)
-				assert.Equal(t, expected.ok, ok, "match result mismatch for input %d (%s)", i, inputStr)
+				assert.Equal(t, expected, struct {
+					index  int
+					offset int
+					ok     bool
+				}{idx, off, ok}, "index mismatch for input %d (%s)", i, inputStr)
 
 				if ok { // If match, advance input by the whole pattern and set offset to 0
 					input, index, offset = input[idx+off:], 0, 0

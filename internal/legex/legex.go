@@ -7,6 +7,7 @@ func (re *Regexp) Get() *Machine {
 		m = new(Machine)
 	}
 	m.re = re
+	m.accum = 0
 	m.matched = false
 	m.p = re.prog
 	if cap(m.matchcap) < re.matchcap {
