@@ -40,11 +40,6 @@ func (m *Machine) Match(index int, offset int, buf []byte) (int, int, bool) {
 	return m.matchcap[0], m.matchcap[1] - m.matchcap[0], true
 }
 
-func (m *Machine) Reset() {
-	m.clear(&m.q0)
-	m.clear(&m.q1)
-}
-
 // A queue is a 'sparse array' holding pending threads of execution.
 // See https://research.swtch.com/2008/03/using-uninitialized-memory-for-fun-and.html
 type queue struct {
@@ -79,13 +74,6 @@ type Machine struct {
 	matchcap []int        // capture information for the match
 
 	accum int
-}
-
-func (m *Machine) init(ncap int) {
-	for _, t := range m.pool {
-		t.cap = t.cap[:ncap]
-	}
-	m.matchcap = m.matchcap[:ncap]
 }
 
 // alloc allocates a new thread with the given instruction.
@@ -397,10 +385,6 @@ again:
 }
 
 // THE CODE BELOW RETAIN ----------------------------------------
-
-// arrayNoInts is returned by doExecute match if nil dstCap is passed
-// to it with ncap=0.
-var arrayNoInts [0]int
 
 // A lazyFlag is a lazily-evaluated syntax.EmptyOp,
 // for checking zero-width flags like ^ $ \A \z \B \b.

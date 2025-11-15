@@ -17,6 +17,11 @@ func (re *Regexp) Get() *Machine {
 		}
 	}
 
+	for _, t := range m.pool {
+		t.cap = t.cap[:m.p.NumCap]
+	}
+	m.matchcap = m.matchcap[:m.p.NumCap]
+
 	// Allocate queues if needed.
 	// Or reallocate, for "large" match pool.
 	n := matchSize[re.mpool]

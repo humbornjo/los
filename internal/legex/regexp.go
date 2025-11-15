@@ -13,9 +13,9 @@ import (
 // A Regexp is safe for concurrent use by multiple goroutines,
 // except for configuration methods, such as [Regexp.Longest].
 type Regexp struct {
-	expr string       // as passed to Compile
-	prog *syntax.Prog // compiled program
-	// onepass        *onePassProg // onepass program or nil
+	expr           string       // as passed to Compile
+	prog           *syntax.Prog // compiled program
+	onepass        *onePassProg // onepass program or nil
 	numSubexp      int
 	maxBitStateLen int
 	subexpNames    []string
@@ -117,9 +117,9 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 		matchcap = 2
 	}
 	regexp := &Regexp{
-		expr: expr,
-		prog: prog,
-		// onepass:     compileOnePass(prog),
+		expr:        expr,
+		prog:        prog,
+		onepass:     compileOnePass(prog),
 		numSubexp:   maxCap,
 		subexpNames: capNames,
 		cond:        prog.StartCond(),
@@ -127,12 +127,12 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 		matchcap:    matchcap,
 		minInputLen: minInputLen(re),
 	}
-	// if regexp.onepass == nil {
-	// 	regexp.prefix, regexp.prefixComplete = prog.Prefix()
-	// 	regexp.maxBitStateLen = maxBitStateLen(prog)
-	// } else {
-	// 	regexp.prefix, regexp.prefixComplete, regexp.prefixEnd = onePassPrefix(prog)
-	// }
+	if regexp.onepass == nil {
+		// 	regexp.prefix, regexp.prefixComplete = prog.Prefix()
+		// 	regexp.maxBitStateLen = maxBitStateLen(prog)
+	} else {
+		regexp.prefix, regexp.prefixComplete, regexp.prefixEnd = onePassPrefix(prog)
+	}
 	if regexp.prefix != "" {
 		// TODO(rsc): Remove this allocation by adding
 		// IndexString to package bytes.

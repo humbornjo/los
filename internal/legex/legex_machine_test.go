@@ -74,13 +74,13 @@ func TestMachine_Match_Base(t *testing.T) {
 				offset int
 				ok     bool
 			}{
-				{17, 4, true},  // First input - partial match "warning" at end
-				{11, 4, true},  // Second input - partial match "warning" at start
-				{19, 4, true},  // Third input - matches "warning"
-				{23, 0, false}, // non-match, just advance all
-				{16, 5, true},  // Fifth input - partial match "Error" at start, then partial "info"
-				{8, 4, true},   // Fifth input - matches "info"
-				{39, 0, false}, // Sixth input - partial match "warning" at end
+				{17, 4, true},  // 01: match "info" at end
+				{11, 4, true},  // 02: match "warn" at end
+				{19, 4, true},  // 03: match "warn" at end
+				{23, 0, false}, // 04: non-match, just advance all
+				{16, 5, true},  // 05: match "error" in the middle
+				{8, 4, true},   // 06: match "warn" at start
+				{39, 0, false}, // 07: match none, advance all
 			},
 		},
 	}
@@ -181,10 +181,10 @@ func TestMachine_Match_Wildcard(t *testing.T) {
 				offset int
 				ok     bool
 			}{
-				{5, 5, false},  // First input - partial match "warning" at end
-				{0, 10, true},  // Second input - partial match "warning" at start
-				{13, 4, false}, // Second input - partial match "warning" at start
-				{0, 10, true},  // Second input - partial match "warning" at start
+				{5, 5, false},  // 01: partial match "abcd1" at end
+				{0, 10, true},  // 02: matched the rest "14514"
+				{13, 4, false}, // 03: must be alphabet before "114514", partial match at the end
+				{0, 10, true},  // 04: matched
 			},
 		},
 	}

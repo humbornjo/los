@@ -2,10 +2,9 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package regexp
+package legex
 
 import (
-	"io"
 	"regexp/syntax"
 	"slices"
 	"strings"
@@ -510,7 +509,7 @@ func compileOnePass(prog *syntax.Prog) (p *onePassProg) {
 }
 
 type onePassMachine struct {
-	inputs   inputs
+	re       *Regexp
 	matchcap []int
 }
 
@@ -525,18 +524,16 @@ func newOnePassMachine() *onePassMachine {
 }
 
 func freeOnePassMachine(m *onePassMachine) {
-	m.inputs.clear()
 	onePassPool.Put(m)
 }
 
 // doOnePass implements r.doExecute using the one-pass execution engine.
-func (re *Regexp) doOnePass(ir io.RuneReader, ib []byte, is string, pos, ncap int, dstCap []int) []int {
-	startCond := re.cond
+func (m *onePassMachine) Match(i input, pos, ncap int, dstCap []int) []int {
+	startCond := m.re.cond
 	if startCond == ^syntax.EmptyOp(0) { // impossible
 		return nil
 	}
 
-	m := newOnePassMachine()
 	if cap(m.matchcap) < ncap {
 		m.matchcap = make([]int, ncap)
 	} else {
@@ -547,8 +544,6 @@ func (re *Regexp) doOnePass(ir io.RuneReader, ib []byte, is string, pos, ncap in
 	for i := range m.matchcap {
 		m.matchcap[i] = -1
 	}
-
-	i, _ := m.inputs.init(ir, ib, is)
 
 	r, r1 := endOfText, endOfText
 	width, width1 := 0, 0
@@ -562,23 +557,23 @@ func (re *Regexp) doOnePass(ir io.RuneReader, ib []byte, is string, pos, ncap in
 	} else {
 		flag = i.context(pos)
 	}
-	pc := re.onepass.Start
-	inst := &re.onepass.Inst[pc]
+	pc := m.re.onepass.Start
+	inst := &m.re.onepass.Inst[pc]
 	// If there is a simple literal prefix, skip over it.
 	if pos == 0 && flag.match(syntax.EmptyOp(inst.Arg)) &&
-		len(re.prefix) > 0 && i.canCheckPrefix() {
+		len(m.re.prefix) > 0 && i.canCheckPrefix() {
 		// Match requires literal prefix; fast search for it.
-		if !i.hasPrefix(re) {
+		if !i.hasPrefix(m.re) {
 			goto Return
 		}
-		pos += len(re.prefix)
+		pos += len(m.re.prefix)
 		r, width = i.step(pos)
 		r1, width1 = i.step(pos + width)
 		flag = i.context(pos)
-		pc = int(re.prefixEnd)
+		pc = int(m.re.prefixEnd)
 	}
 	for {
-		inst = &re.onepass.Inst[pc]
+		inst = &m.re.onepass.Inst[pc]
 		pc = int(inst.Out)
 		switch inst.Op {
 		default:
