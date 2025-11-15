@@ -167,6 +167,26 @@ func TestMachine_Match_Wildcard(t *testing.T) {
 				{3, 0, false}, // "def" - no match
 			},
 		},
+		{
+			name: "long stream with prefix wildcard",
+			expr: "[a-z]+114514",
+			inputs: []string{
+				"ABCD abcd1",
+				"14514 yeah",
+				" 114514 abcd",
+				"114514",
+			},
+			expected: []struct {
+				index  int
+				offset int
+				ok     bool
+			}{
+				{5, 5, false},  // First input - partial match "warning" at end
+				{0, 10, true},  // Second input - partial match "warning" at start
+				{13, 4, false}, // Second input - partial match "warning" at start
+				{0, 10, true},  // Second input - partial match "warning" at start
+			},
+		},
 	}
 
 	for _, tt := range tests {

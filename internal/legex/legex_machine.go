@@ -21,7 +21,6 @@ func (m *Machine) Match(index int, offset int, buf []byte) (int, int, bool) {
 	// - machine will remember the new index, if the index changed in the next match, the collected match index will be
 	//   decreased by the difference as well.
 	idx, off, ok := m.match(input, index, offset)
-
 	if !ok {
 		shift := math.MaxInt
 		for _, e := range m.q0.dense {
@@ -170,8 +169,6 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 				break
 			}
 
-			// m.add(runq, uint32(m.p.Start), index, m.matchcap, &flag, nil)
-
 			// When prefix is already been matched, just goto weave
 			if len(m.re.prefix) == 0 || offset == len(m.re.prefix) {
 				goto weave // time to add some threads
@@ -193,17 +190,18 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 			// }
 		}
 
-	weave: // When reaching here, sure its in the middle of matching.
-		if !m.matched {
-			if len(m.matchcap) > 0 {
-				m.matchcap[0] = index + offset
-			}
-			m.add(runq, uint32(m.p.Start), index+offset, m.matchcap, &flag, nil)
-		}
-		flag = newLazyFlag(r, r1)
+	weave: // Already in the middle of matching.
 		if width == 0 {
 			break
 		}
+
+		if !m.matched {
+			// if len(m.matchcap) > 0 {
+			// 	m.matchcap[0] = index + offset
+			// }
+			m.add(runq, uint32(m.p.Start), index+offset, nil, &flag, nil)
+		}
+		flag = newLazyFlag(r, r1)
 
 		m.step(runq, nextq, index+offset, index+offset+width, r, &flag)
 		offset += width
@@ -270,10 +268,13 @@ func (m *Machine) step(runq, nextq *queue, pos, nextPos int, c rune, nextCond *l
 		if t == nil {
 			continue
 		}
+
+		// TODO: Delete this block [Longest Not Planned]
 		if longest && m.matched && len(t.cap) > 0 && m.matchcap[0] < t.cap[0] {
 			m.pool = append(m.pool, t)
 			continue
 		}
+
 		i := t.inst
 		add := false
 		switch i.Op {
@@ -365,6 +366,7 @@ again:
 		}
 	case syntax.InstMatch:
 		longest := m.re.longest
+		// TODO: Delete the condition after '&&' since I do not want to support Longest here
 		if len(t.cap) > 0 && (!longest || !m.matched || m.matchcap[1] < pos) {
 			t.cap[0], t.cap[1] = t.cap[0]-m.accum, pos
 			copy(m.matchcap, t.cap)
@@ -383,13 +385,11 @@ again:
 	case syntax.InstRune, syntax.InstRune1, syntax.InstRuneAny, syntax.InstRuneAnyNotNL:
 		if t == nil {
 			t = m.alloc(i)
+			t.cap[0] = pos + m.accum
 			copy(t.cap, cap)
 		} else {
 			t.inst = i
 		}
-		// if len(cap) > 0 && &t.cap[0] != &cap[0] {
-		// 	copy(t.cap, cap)
-		// }
 		d.t = t
 		t = nil
 	}
