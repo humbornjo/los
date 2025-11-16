@@ -8,10 +8,149 @@ import (
 	"regexp/syntax"
 	"slices"
 	"strings"
-	"sync"
 	"unicode"
 	"unicode/utf8"
 )
+
+var _ Machine = (*machineOnePass)(nil)
+
+type machineOnePass struct {
+	re       *Regexp
+	matchcap []int
+	accum    int
+}
+
+func (m *machineOnePass) Accum() int {
+	return m.accum
+}
+
+func (m *machineOnePass) Close() {
+	onePassPool.Put(m)
+}
+
+func (m *machineOnePass) MatchCap() []int {
+	return slices.Clone(m.matchcap)
+}
+
+func (m *machineOnePass) Reset() {
+	m.accum = 0
+	for i := range m.matchcap {
+		m.matchcap[i] = -1
+	}
+}
+
+// doOnePass implements r.doExecute using the one-pass execution engine.
+// func (m *machineOnePass) Match(i input, pos, ncap int, dstCap []int) []int {
+func (m *machineOnePass) Match(index int, offset int, buffer []byte) (int, int, bool) {
+	startCond := m.re.cond
+	if startCond == ^syntax.EmptyOp(0) { // impossible
+		return index, offset, false
+	}
+
+	i := inputBytes{buffer}
+	r, r1 := endOfText, endOfText
+	width, width1 := 0, 0
+	r, width = i.step(index + offset)
+	if r != endOfText {
+		r1, width1 = i.step(index + offset + width)
+	}
+	var flag lazyFlag
+	if offset == 0 {
+		flag = newLazyFlag(-1, r)
+	} else {
+		flag = i.context(index + offset)
+	}
+
+	pc := m.re.onepass.Start
+	inst := &m.re.onepass.Inst[pc]
+
+	// If there is a simple literal prefix, skip over it.
+	if len(m.re.prefix) > 0 &&
+		offset < len(m.re.prefix) &&
+		flag.match(syntax.EmptyOp(inst.Arg)) {
+
+		// Match requires literal prefix; fast search for it.
+		index, offset = m.prologue(i, index, offset)
+		if offset != len(m.re.prefix) {
+			return index, offset, false
+		}
+
+		// if !i.hasPrefix(m.re) {
+		// 	goto Return
+		// }
+
+		r, width = i.step(index + offset)
+		r1, width1 = i.step(index + offset + width)
+		flag = i.context(index + offset)
+		pc = int(m.re.prefixEnd)
+	}
+
+	for {
+		inst = &m.re.onepass.Inst[pc]
+		pc = int(inst.Out)
+		switch inst.Op {
+		default:
+			panic("bad inst")
+		case syntax.InstMatch:
+			matched = true
+			if len(m.matchcap) > 0 {
+				m.matchcap[0] = 0
+				m.matchcap[1] = pos
+			}
+			goto Return
+		case syntax.InstRune:
+			if !inst.MatchRune(r) {
+				goto Return
+			}
+		case syntax.InstRune1:
+			if r != inst.Rune[0] {
+				goto Return
+			}
+		case syntax.InstRuneAny:
+			// Nothing
+		case syntax.InstRuneAnyNotNL:
+			if r == '\n' {
+				goto Return
+			}
+		// peek at the input rune to see which branch of the Alt to take
+		case syntax.InstAlt, syntax.InstAltMatch:
+			pc = int(onePassNext(inst, r))
+			continue
+		case syntax.InstFail:
+			goto Return
+		case syntax.InstNop:
+			continue
+		case syntax.InstEmptyWidth:
+			if !flag.match(syntax.EmptyOp(inst.Arg)) {
+				goto Return
+			}
+			continue
+		case syntax.InstCapture:
+			if int(inst.Arg) < len(m.matchcap) {
+				m.matchcap[inst.Arg] = pos
+			}
+			continue
+		}
+		if width == 0 {
+			break
+		}
+		flag = newLazyFlag(r, r1)
+		pos += width
+		r, width = r1, width1
+		if r != endOfText {
+			r1, width1 = i.step(index + offset + width)
+		}
+	}
+
+Return:
+	if !matched {
+		return nil
+	}
+
+	return dstCap
+}
+
+// THE CODE BELOW RETAIN ----------------------------------------
 
 // "One-pass" regexp execution.
 // Some regexps can be analyzed to determine that they never need
@@ -506,136 +645,4 @@ func compileOnePass(prog *syntax.Prog) (p *onePassProg) {
 		cleanupOnePass(p, prog)
 	}
 	return p
-}
-
-type onePassMachine struct {
-	re       *Regexp
-	matchcap []int
-}
-
-var onePassPool sync.Pool
-
-func newOnePassMachine() *onePassMachine {
-	m, ok := onePassPool.Get().(*onePassMachine)
-	if !ok {
-		m = new(onePassMachine)
-	}
-	return m
-}
-
-func freeOnePassMachine(m *onePassMachine) {
-	onePassPool.Put(m)
-}
-
-// doOnePass implements r.doExecute using the one-pass execution engine.
-func (m *onePassMachine) Match(i input, pos, ncap int, dstCap []int) []int {
-	startCond := m.re.cond
-	if startCond == ^syntax.EmptyOp(0) { // impossible
-		return nil
-	}
-
-	if cap(m.matchcap) < ncap {
-		m.matchcap = make([]int, ncap)
-	} else {
-		m.matchcap = m.matchcap[:ncap]
-	}
-
-	matched := false
-	for i := range m.matchcap {
-		m.matchcap[i] = -1
-	}
-
-	r, r1 := endOfText, endOfText
-	width, width1 := 0, 0
-	r, width = i.step(pos)
-	if r != endOfText {
-		r1, width1 = i.step(pos + width)
-	}
-	var flag lazyFlag
-	if pos == 0 {
-		flag = newLazyFlag(-1, r)
-	} else {
-		flag = i.context(pos)
-	}
-	pc := m.re.onepass.Start
-	inst := &m.re.onepass.Inst[pc]
-	// If there is a simple literal prefix, skip over it.
-	if pos == 0 && flag.match(syntax.EmptyOp(inst.Arg)) &&
-		len(m.re.prefix) > 0 && i.canCheckPrefix() {
-		// Match requires literal prefix; fast search for it.
-		if !i.hasPrefix(m.re) {
-			goto Return
-		}
-		pos += len(m.re.prefix)
-		r, width = i.step(pos)
-		r1, width1 = i.step(pos + width)
-		flag = i.context(pos)
-		pc = int(m.re.prefixEnd)
-	}
-	for {
-		inst = &m.re.onepass.Inst[pc]
-		pc = int(inst.Out)
-		switch inst.Op {
-		default:
-			panic("bad inst")
-		case syntax.InstMatch:
-			matched = true
-			if len(m.matchcap) > 0 {
-				m.matchcap[0] = 0
-				m.matchcap[1] = pos
-			}
-			goto Return
-		case syntax.InstRune:
-			if !inst.MatchRune(r) {
-				goto Return
-			}
-		case syntax.InstRune1:
-			if r != inst.Rune[0] {
-				goto Return
-			}
-		case syntax.InstRuneAny:
-			// Nothing
-		case syntax.InstRuneAnyNotNL:
-			if r == '\n' {
-				goto Return
-			}
-		// peek at the input rune to see which branch of the Alt to take
-		case syntax.InstAlt, syntax.InstAltMatch:
-			pc = int(onePassNext(inst, r))
-			continue
-		case syntax.InstFail:
-			goto Return
-		case syntax.InstNop:
-			continue
-		case syntax.InstEmptyWidth:
-			if !flag.match(syntax.EmptyOp(inst.Arg)) {
-				goto Return
-			}
-			continue
-		case syntax.InstCapture:
-			if int(inst.Arg) < len(m.matchcap) {
-				m.matchcap[inst.Arg] = pos
-			}
-			continue
-		}
-		if width == 0 {
-			break
-		}
-		flag = newLazyFlag(r, r1)
-		pos += width
-		r, width = r1, width1
-		if r != endOfText {
-			r1, width1 = i.step(pos + width)
-		}
-	}
-
-Return:
-	if !matched {
-		freeOnePassMachine(m)
-		return nil
-	}
-
-	dstCap = append(dstCap, m.matchcap...)
-	freeOnePassMachine(m)
-	return dstCap
 }

@@ -71,13 +71,13 @@ func NewPair(head, tail string, opts ...pairOption) *Pair {
 
 func NewMatcher(pair *Pair) Matcher {
 	var patHead, parTail pattern
-	if pair.headRegex == 0 {
+	if pair.headRegex == _REGEX_MODE_NONE {
 		patHead = newKmpPattern(pair.head)
 	} else {
 		patHead = newRegexPattern(pair.head, pair.headRegex)
 	}
 
-	if pair.tailRegex == 0 {
+	if pair.tailRegex == _REGEX_MODE_NONE {
 		parTail = newKmpPattern(pair.tail)
 	} else {
 		parTail = newRegexPattern(pair.tail, pair.tailRegex)
@@ -317,8 +317,7 @@ func (pat *kmpPattern) Build(buffer *bytes.Buffer, n int, state State) Result {
 //
 // - https://swtch.com/~rsc/regexp/regexp2.html
 type regexPattern struct {
-	*legex.Machine
-	clearFunc func()
+	legex.Machine
 }
 
 // legex.Machine implement pattern
@@ -334,11 +333,11 @@ func newRegexPattern(pattern string, mode regexMode) *regexPattern {
 	default:
 		panic("unreachable")
 	}
-	return &regexPattern{re.Get(), func() { re.Put(re.Get()) }}
+	return &regexPattern{re.Get()}
 }
 
 func (pat *regexPattern) Clear() {
-	pat.clearFunc()
+	pat.Close()
 }
 
 func (pat *regexPattern) Build(buffer *bytes.Buffer, n int, state State) Result {

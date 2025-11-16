@@ -1,14 +1,50 @@
 package legex
 
 import (
-	"bytes"
 	"math"
 	"regexp/syntax"
 	"slices"
 )
 
-func (m *Machine) Match(index int, offset int, buf []byte) (int, int, bool) {
-	input := &inputBytes{bytes.NewBuffer(buf)}
+var _ Machine = (*machineDefault)(nil)
+
+// A machineDefault holds all the state during an NFA simulation for p.
+type machineDefault struct {
+	re      *Regexp      // corresponding Regexp
+	p       *syntax.Prog // compiled program
+	q0, q1  queue        // two queues for runq, nextq
+	pool    []*thread    // pool of available threads
+	matched bool         // whether a match was found
+
+	accum    int   // index accumulator to calibrate matchcap
+	matchcap []int // capture information for the match
+}
+
+func (m *machineDefault) Reset() {
+	m.accum = 0
+	m.matched = false
+	for i := range m.matchcap {
+		m.matchcap[i] = -1
+	}
+}
+
+func (m *machineDefault) Close() {
+	m.clear(&m.q0)
+	m.clear(&m.q1)
+	m.re, m.p = nil, nil
+	defaultPool[m.re.mpool].Put(m)
+}
+
+func (m *machineDefault) Accum() int {
+	return m.accum
+}
+
+func (m *machineDefault) MatchCap() []int {
+	return slices.Clone(m.matchcap)
+}
+
+func (m *machineDefault) Match(index int, offset int, buf []byte) (int, int, bool) {
+	input := &inputBytes{buf}
 	// Machine will continue to match from index+offset, where the previous match stopped
 	//
 	// INFO: If match the full pattern,
@@ -39,77 +75,10 @@ func (m *Machine) Match(index int, offset int, buf []byte) (int, int, bool) {
 	return m.matchcap[0], m.matchcap[1] - m.matchcap[0], true
 }
 
-func (m *Machine) Reset() {
-	m.accum = 0
-	m.matched = false
-	for i := range m.matchcap {
-		m.matchcap[i] = -1
-	}
-}
-
-func (m *Machine) Accum() int {
-	return m.accum
-}
-
-func (m *Machine) MatchCap() []int {
-	return slices.Clone(m.matchcap)
-}
-
-// A queue is a 'sparse array' holding pending threads of execution.
-// See https://research.swtch.com/2008/03/using-uninitialized-memory-for-fun-and.html
-type queue struct {
-	sparse []uint32
-	dense  []entry
-}
-
-// An entry is an entry on a queue.
-// It holds both the instruction pc and the actual thread.
-// Some queue entries are just place holders so that the machine
-// knows it has considered that pc. Such entries have t == nil.
-type entry struct {
-	pc uint32
-	t  *thread
-}
-
-// A thread is the state of a single path through the machine:
-// an instruction and a corresponding capture array.
-// See https://swtch.com/~rsc/regexp/regexp2.html
-type thread struct {
-	inst *syntax.Inst
-	cap  []int
-}
-
-// A Machine holds all the state during an NFA simulation for p.
-type Machine struct {
-	re      *Regexp      // corresponding Regexp
-	p       *syntax.Prog // compiled program
-	q0, q1  queue        // two queues for runq, nextq
-	pool    []*thread    // pool of available threads
-	matched bool         // whether a match was found
-
-	accum    int   // accumulator for indexing correct pos
-	matchcap []int // capture information for the match
-}
-
-// alloc allocates a new thread with the given instruction.
-// It uses the free pool if possible.
-func (m *Machine) alloc(i *syntax.Inst) *thread {
-	var t *thread
-	if n := len(m.pool); n > 0 {
-		t = m.pool[n-1]
-		m.pool = m.pool[:n-1]
-	} else {
-		t = new(thread)
-		t.cap = make([]int, len(m.matchcap), cap(m.matchcap))
-	}
-	t.inst = i
-	return t
-}
-
 // match runs the machine over the input starting at pos.
 // It reports whether a match was found.
 // If so, m.matchcap holds the submatch information.
-func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
+func (m *machineDefault) match(i input, index int, offset int) (int, int, bool) {
 	startCond := m.re.cond
 
 	// Start Op is InstFail startCond is ^EmptyOp(0)
@@ -229,7 +198,7 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 
 // prologue match the prefix of regular expr, advance index and
 // offset if found a (potential) match.
-func (m *Machine) prologue(i input, index int, offset int) (int, int) {
+func (m *machineDefault) prologue(i input, index int, offset int) (int, int) {
 	n0, n1 := len(m.re.prefix), len(i.inner())
 	i0, i1 := offset, index+offset
 	for i0 < n0 && i1 < n1 {
@@ -243,7 +212,7 @@ func (m *Machine) prologue(i input, index int, offset int) (int, int) {
 }
 
 // clear frees all threads on the thread queue.
-func (m *Machine) clear(q *queue) {
+func (m *machineDefault) clear(q *queue) {
 	for _, d := range q.dense {
 		if d.t != nil {
 			m.pool = append(m.pool, d.t)
@@ -257,7 +226,7 @@ func (m *Machine) clear(q *queue) {
 // The step processes the rune c (which may be endOfText),
 // which starts at position pos and ends at nextPos.
 // nextCond gives the setting for the empty-width flags after c.
-func (m *Machine) step(runq, nextq *queue, pos, nextPos int, c rune, nextCond *lazyFlag) {
+func (m *machineDefault) step(runq, nextq *queue, pos, nextPos int, c rune, nextCond *lazyFlag) {
 	longest := m.re.longest
 	for j := 0; j < len(runq.dense); j++ {
 		d := &runq.dense[j]
@@ -317,7 +286,7 @@ func (m *Machine) step(runq, nextq *queue, pos, nextPos int, c rune, nextCond *l
 // It also recursively adds an entry for all instructions reachable from pc by following
 // empty-width conditions satisfied by cond.  pos gives the current position
 // in the input.
-func (m *Machine) add(q *queue, pc uint32, pos int, cap []int, cond *lazyFlag, t *thread) *thread {
+func (m *machineDefault) add(q *queue, pc uint32, pos int, cap []int, cond *lazyFlag, t *thread) *thread {
 again:
 	if pc == 0 {
 		return t
@@ -394,6 +363,45 @@ again:
 }
 
 // THE CODE BELOW RETAIN ----------------------------------------
+
+// A queue is a 'sparse array' holding pending threads of execution.
+// See https://research.swtch.com/2008/03/using-uninitialized-memory-for-fun-and.html
+type queue struct {
+	sparse []uint32
+	dense  []entry
+}
+
+// An entry is an entry on a queue.
+// It holds both the instruction pc and the actual thread.
+// Some queue entries are just place holders so that the machine
+// knows it has considered that pc. Such entries have t == nil.
+type entry struct {
+	pc uint32
+	t  *thread
+}
+
+// A thread is the state of a single path through the machine:
+// an instruction and a corresponding capture array.
+// See https://swtch.com/~rsc/regexp/regexp2.html
+type thread struct {
+	inst *syntax.Inst
+	cap  []int
+}
+
+// alloc allocates a new thread with the given instruction.
+// It uses the free pool if possible.
+func (m *machineDefault) alloc(i *syntax.Inst) *thread {
+	var t *thread
+	if n := len(m.pool); n > 0 {
+		t = m.pool[n-1]
+		m.pool = m.pool[:n-1]
+	} else {
+		t = new(thread)
+		t.cap = make([]int, len(m.matchcap), cap(m.matchcap))
+	}
+	t.inst = i
+	return t
+}
 
 // A lazyFlag is a lazily-evaluated syntax.EmptyOp,
 // for checking zero-width flags like ^ $ \A \z \B \b.

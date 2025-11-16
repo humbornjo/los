@@ -1,18 +1,4 @@
-// Copyright 2015 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
-// backtrack is a regular expression search with submatch
-// tracking for small regular expressions and texts. It allocates
-// a bit vector with (length of input) * (length of prog) bits,
-// to make sure it never explores the same (character position, instruction)
-// state multiple times. This limits the search to run in time linear in
-// the length of the test.
-//
-// backtrack is a fast replacement for the NFA code on small
-// regexps when onepass cannot be used.
-
-package regexp
+package legex
 
 import (
 	"regexp/syntax"
@@ -40,8 +26,6 @@ type bitState struct {
 	matchcap []int
 	jobs     []job
 	visited  []uint32
-
-	inputs inputs
 }
 
 var bitStatePool sync.Pool
@@ -55,7 +39,6 @@ func newBitState() *bitState {
 }
 
 func freeBitState(b *bitState) {
-	b.inputs.clear()
 	bitStatePool.Put(b)
 }
 
@@ -302,7 +285,7 @@ func (re *Regexp) tryBacktrack(b *bitState, i input, pc uint32, pos int) bool {
 }
 
 // backtrack runs a backtracking search of prog on the input starting at pos.
-func (re *Regexp) backtrack(ib []byte, is string, pos int, ncap int, dstCap []int) []int {
+func (re *Regexp) backtrack(i input, pos int, ncap int, dstCap []int) []int {
 	startCond := re.cond
 	if startCond == ^syntax.EmptyOp(0) { // impossible
 		return nil
@@ -312,8 +295,7 @@ func (re *Regexp) backtrack(ib []byte, is string, pos int, ncap int, dstCap []in
 		return nil
 	}
 
-	b := newBitState()
-	i, end := b.inputs.init(nil, ib, is)
+	b, end := newBitState(), len(i.inner())
 	b.reset(re.prog, end, ncap)
 
 	// Anchored search must start at the beginning of the input

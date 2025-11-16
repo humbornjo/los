@@ -5,7 +5,6 @@ import (
 	"io"
 	"regexp/syntax"
 	"strconv"
-	"sync"
 	"unicode/utf8"
 )
 
@@ -37,19 +36,6 @@ type Regexp struct {
 // String returns the source text used to compile the regular expression.
 func (re *Regexp) String() string {
 	return re.expr
-}
-
-// Copy returns a new [Regexp] object copied from re.
-// Calling [Regexp.Longest] on one copy does not affect another.
-//
-// Deprecated: In earlier releases, when using a [Regexp] in multiple goroutines,
-// giving each goroutine its own copy helped to avoid lock contention.
-// As of Go 1.12, using Copy is no longer necessary to avoid lock contention.
-// Copy may still be appropriate if the reason for its use is to make
-// two copies with different [Regexp.Longest] settings.
-func (re *Regexp) Copy() *Regexp {
-	re2 := *re
-	return &re2
 }
 
 // Compile parses a regular expression and returns, if successful,
@@ -128,8 +114,8 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 		minInputLen: minInputLen(re),
 	}
 	if regexp.onepass == nil {
-		// 	regexp.prefix, regexp.prefixComplete = prog.Prefix()
-		// 	regexp.maxBitStateLen = maxBitStateLen(prog)
+		regexp.prefix, regexp.prefixComplete = prog.Prefix()
+		regexp.maxBitStateLen = maxBitStateLen(prog)
 	} else {
 		regexp.prefix, regexp.prefixComplete, regexp.prefixEnd = onePassPrefix(prog)
 	}
@@ -142,24 +128,13 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 
 	n := len(prog.Inst)
 	i := 0
-	for matchSize[i] != 0 && matchSize[i] < n {
+	for defaultSize[i] != 0 && defaultSize[i] < n {
 		i++
 	}
 	regexp.mpool = i
 
 	return regexp, nil
 }
-
-// Pools of *machine for use during (*Regexp).doExecute,
-// split up by the size of the execution queues.
-// matchPool[i] machines have queue size matchSize[i].
-// On a 64-bit system each queue entry is 16 bytes,
-// so matchPool[0] has 16*2*128 = 4kB queues, etc.
-// The final matchPool is a catch-all for very large queues.
-var (
-	matchSize = [...]int{128, 512, 2048, 16384, 0}
-	matchPool [len(matchSize)]sync.Pool
-)
 
 // minInputLen walks the regexp to find the minimum length of any matchable input.
 func minInputLen(re *syntax.Regexp) int {
@@ -282,22 +257,22 @@ type input interface {
 
 // inputBytes scans a byte slice.
 type inputBytes struct {
-	str *bytes.Buffer
+	str []byte
 }
 
 func (i *inputBytes) step(pos int) (rune, int) {
-	if pos < i.str.Len() {
-		c := i.str.Bytes()[pos] // i.str[pos]
+	if pos < len(i.str) {
+		c := i.str[pos] // i.str[pos]
 		if c < utf8.RuneSelf {
 			return rune(c), 1
 		}
-		return utf8.DecodeRune(i.str.Bytes()[pos:])
+		return utf8.DecodeRune(i.str[pos:])
 	}
 	return endOfText, 0
 }
 
 func (i *inputBytes) inner() []byte {
-	return i.str.Bytes()
+	return i.str
 }
 
 func (i *inputBytes) canCheckPrefix() bool {
@@ -305,28 +280,28 @@ func (i *inputBytes) canCheckPrefix() bool {
 }
 
 func (i *inputBytes) hasPrefix(re *Regexp) bool {
-	return bytes.HasPrefix(i.str.Bytes(), re.prefixBytes)
+	return bytes.HasPrefix(i.str, re.prefixBytes)
 }
 
 func (i *inputBytes) index(re *Regexp, pos int) int {
 
-	return bytes.Index(i.str.Bytes()[pos:], re.prefixBytes)
+	return bytes.Index(i.str[pos:], re.prefixBytes)
 }
 
 func (i *inputBytes) context(pos int) lazyFlag {
 	r1, r2 := endOfText, endOfText
 	// 0 < pos && pos <= len(i.str)
-	if uint(pos-1) < uint(i.str.Len()) {
-		r1 = rune(i.str.Bytes()[pos-1])
+	if uint(pos-1) < uint(len(i.str)) {
+		r1 = rune(i.str[pos-1])
 		if r1 >= utf8.RuneSelf {
-			r1, _ = utf8.DecodeLastRune(i.str.Bytes()[:pos])
+			r1, _ = utf8.DecodeLastRune(i.str[:pos])
 		}
 	}
 	// 0 <= pos && pos < len(i.str)
-	if uint(pos) < uint(i.str.Len()) {
-		r2 = rune(i.str.Bytes()[pos])
+	if uint(pos) < uint(len(i.str)) {
+		r2 = rune(i.str[pos])
 		if r2 >= utf8.RuneSelf {
-			r2, _ = utf8.DecodeRune(i.str.Bytes()[pos:])
+			r2, _ = utf8.DecodeRune(i.str[pos:])
 		}
 	}
 	return newLazyFlag(r1, r2)
