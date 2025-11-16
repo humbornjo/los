@@ -1,11 +1,8 @@
 package legex
 
 import (
-	"bytes"
-	"io"
 	"regexp/syntax"
 	"strconv"
-	"sync"
 	"unicode/utf8"
 )
 
@@ -13,21 +10,21 @@ import (
 // A Regexp is safe for concurrent use by multiple goroutines,
 // except for configuration methods, such as [Regexp.Longest].
 type Regexp struct {
-	expr           string       // as passed to Compile
-	prog           *syntax.Prog // compiled program
-	onepass        *onePassProg // onepass program or nil
-	numSubexp      int
-	maxBitStateLen int
-	subexpNames    []string
-	prefix         string         // required prefix in unanchored matches
-	prefixBytes    []byte         // prefix, as a []byte
-	prefixRune     rune           // first rune in prefix
-	prefixEnd      uint32         // pc for last rune in prefix
+	expr        string       // as passed to Compile
+	prog        *syntax.Prog // compiled program
+	numSubexp   int
+	subexpNames []string
+	prefix      string // required prefix in unanchored matches
+	prefixBytes []byte // prefix, as a []byte
+	prefixRune  rune   // first rune in prefix
+	// prefixEnd      uint32         // pc for last rune in prefix
 	mpool          int            // pool for machines
 	matchcap       int            // size of recorded match lengths
 	prefixComplete bool           // prefix is the entire regexp
 	cond           syntax.EmptyOp // empty-width conditions required at start of match
 	minInputLen    int            // minimum length of the input in bytes
+
+	strict bool // whether prog contains zero-width assertions except word boundaries
 
 	// This field can be modified by the Longest method,
 	// but it is otherwise read-only.
@@ -37,19 +34,6 @@ type Regexp struct {
 // String returns the source text used to compile the regular expression.
 func (re *Regexp) String() string {
 	return re.expr
-}
-
-// Copy returns a new [Regexp] object copied from re.
-// Calling [Regexp.Longest] on one copy does not affect another.
-//
-// Deprecated: In earlier releases, when using a [Regexp] in multiple goroutines,
-// giving each goroutine its own copy helped to avoid lock contention.
-// As of Go 1.12, using Copy is no longer necessary to avoid lock contention.
-// Copy may still be appropriate if the reason for its use is to make
-// two copies with different [Regexp.Longest] settings.
-func (re *Regexp) Copy() *Regexp {
-	re2 := *re
-	return &re2
 }
 
 // Compile parses a regular expression and returns, if successful,
@@ -112,14 +96,11 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 	if err != nil {
 		return nil, err
 	}
-	matchcap := prog.NumCap
-	if matchcap < 2 {
-		matchcap = 2
-	}
+
+	matchcap := max(prog.NumCap, 2)
 	regexp := &Regexp{
 		expr:        expr,
 		prog:        prog,
-		onepass:     compileOnePass(prog),
 		numSubexp:   maxCap,
 		subexpNames: capNames,
 		cond:        prog.StartCond(),
@@ -127,12 +108,21 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 		matchcap:    matchcap,
 		minInputLen: minInputLen(re),
 	}
-	if regexp.onepass == nil {
-		// 	regexp.prefix, regexp.prefixComplete = prog.Prefix()
-		// 	regexp.maxBitStateLen = maxBitStateLen(prog)
-	} else {
-		regexp.prefix, regexp.prefixComplete, regexp.prefixEnd = onePassPrefix(prog)
+
+	for _, inst := range prog.Inst {
+		if inst.Op == syntax.InstEmptyWidth {
+			if syntax.EmptyOp(inst.Arg) == syntax.EmptyBeginLine ||
+				syntax.EmptyOp(inst.Arg) == syntax.EmptyEndText {
+				regexp.strict = true
+				break
+			}
+		}
 	}
+
+	// TODO: Compile onepass
+	regexp.prefix, regexp.prefixComplete = prog.Prefix()
+	// TODO: Introduce backtrace
+
 	if regexp.prefix != "" {
 		// TODO(rsc): Remove this allocation by adding
 		// IndexString to package bytes.
@@ -142,24 +132,13 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 
 	n := len(prog.Inst)
 	i := 0
-	for matchSize[i] != 0 && matchSize[i] < n {
+	for defaultSize[i] != 0 && defaultSize[i] < n {
 		i++
 	}
 	regexp.mpool = i
 
 	return regexp, nil
 }
-
-// Pools of *machine for use during (*Regexp).doExecute,
-// split up by the size of the execution queues.
-// matchPool[i] machines have queue size matchSize[i].
-// On a 64-bit system each queue entry is 16 bytes,
-// so matchPool[0] has 16*2*128 = 4kB queues, etc.
-// The final matchPool is a catch-all for very large queues.
-var (
-	matchSize = [...]int{128, 512, 2048, 16384, 0}
-	matchPool [len(matchSize)]sync.Pool
-)
 
 // minInputLen walks the regexp to find the minimum length of any matchable input.
 func minInputLen(re *syntax.Regexp) int {
@@ -264,111 +243,6 @@ func (re *Regexp) SubexpIndex(name string) int {
 
 const endOfText rune = -1
 
-// input abstracts different representations of the input text. It provides
-// one-character lookahead.
-type input interface {
-	// advance one rune
-	step(pos int) (r rune, width int)
-	// can we look ahead without losing info?
-	canCheckPrefix() bool
-	// check if the
-	hasPrefix(re *Regexp) bool
-	// index is used to match literal prefix
-	index(re *Regexp, pos int) int
-	context(pos int) lazyFlag
-
-	inner() []byte
-}
-
-// inputBytes scans a byte slice.
-type inputBytes struct {
-	str *bytes.Buffer
-}
-
-func (i *inputBytes) step(pos int) (rune, int) {
-	if pos < i.str.Len() {
-		c := i.str.Bytes()[pos] // i.str[pos]
-		if c < utf8.RuneSelf {
-			return rune(c), 1
-		}
-		return utf8.DecodeRune(i.str.Bytes()[pos:])
-	}
-	return endOfText, 0
-}
-
-func (i *inputBytes) inner() []byte {
-	return i.str.Bytes()
-}
-
-func (i *inputBytes) canCheckPrefix() bool {
-	return true
-}
-
-func (i *inputBytes) hasPrefix(re *Regexp) bool {
-	return bytes.HasPrefix(i.str.Bytes(), re.prefixBytes)
-}
-
-func (i *inputBytes) index(re *Regexp, pos int) int {
-
-	return bytes.Index(i.str.Bytes()[pos:], re.prefixBytes)
-}
-
-func (i *inputBytes) context(pos int) lazyFlag {
-	r1, r2 := endOfText, endOfText
-	// 0 < pos && pos <= len(i.str)
-	if uint(pos-1) < uint(i.str.Len()) {
-		r1 = rune(i.str.Bytes()[pos-1])
-		if r1 >= utf8.RuneSelf {
-			r1, _ = utf8.DecodeLastRune(i.str.Bytes()[:pos])
-		}
-	}
-	// 0 <= pos && pos < len(i.str)
-	if uint(pos) < uint(i.str.Len()) {
-		r2 = rune(i.str.Bytes()[pos])
-		if r2 >= utf8.RuneSelf {
-			r2, _ = utf8.DecodeRune(i.str.Bytes()[pos:])
-		}
-	}
-	return newLazyFlag(r1, r2)
-}
-
-// inputReader scans a RuneReader.
-type inputReader struct {
-	r     io.RuneReader
-	atEOT bool
-	pos   int
-}
-
-func (i *inputReader) step(pos int) (rune, int) {
-	if !i.atEOT && pos != i.pos {
-		return endOfText, 0
-
-	}
-	r, w, err := i.r.ReadRune()
-	if err != nil {
-		i.atEOT = true
-		return endOfText, 0
-	}
-	i.pos += w
-	return r, w
-}
-
-func (i *inputReader) canCheckPrefix() bool {
-	return false
-}
-
-func (i *inputReader) hasPrefix(re *Regexp) bool {
-	return false
-}
-
-func (i *inputReader) index(re *Regexp, pos int) int {
-	return -1
-}
-
-func (i *inputReader) context(pos int) lazyFlag {
-	return 0 // not used
-}
-
 // LiteralPrefix returns a literal string that must begin any match
 // of the regular expression re. It returns the boolean true if the
 // literal string comprises the entire regular expression.
@@ -420,24 +294,22 @@ func QuoteMeta(s string) string {
 	return string(b[:j])
 }
 
-// The number of capture values in the program may correspond
-// to fewer capturing expressions than are in the regexp.
-// For example, "(a){0}" turns into an empty program, so the
-// maximum capture in the program is 0 but we need to return
-// an expression for \1.  Pad appends -1s to the slice a as needed.
-func (re *Regexp) pad(a []int) []int {
-	if a == nil {
-		// No match.
-		return nil
-	}
-	n := (1 + re.numSubexp) * 2
-	for len(a) < n {
-		a = append(a, -1)
-	}
-	return a
-}
-
-const startSize = 10 // The size at which to start a slice in the 'All' routines.
+// // The number of capture values in the program may correspond
+// // to fewer capturing expressions than are in the regexp.
+// // For example, "(a){0}" turns into an empty program, so the
+// // maximum capture in the program is 0 but we need to return
+// // an expression for \1.  Pad appends -1s to the slice a as needed.
+// func (re *Regexp) pad(a []int) []int {
+// 	if a == nil {
+// 		// No match.
+// 		return nil
+// 	}
+// 	n := (1 + re.numSubexp) * 2
+// 	for len(a) < n {
+// 		a = append(a, -1)
+// 	}
+// 	return a
+// }
 
 // AppendText implements [encoding.TextAppender]. The output
 // matches that of calling the [Regexp.String] method.
