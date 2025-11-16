@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMachine_Match_Base(t *testing.T) {
+func TestMachine_Default_Base(t *testing.T) {
 	tests := []struct {
 		name     string
 		expr     string
@@ -108,6 +108,7 @@ func TestMachine_Match_Base(t *testing.T) {
 				}{idx, off, ok}, "index mismatch for input %d (%s)", i, inputStr)
 
 				if ok { // If match, advance input by the whole pattern and set offset to 0
+					machine.Reset()
 					input, index, offset = input[idx+off:], 0, 0
 				} else { // If not match, advance input by idx and update offset
 					input, index, offset = input[idx:], 0, off
@@ -117,7 +118,7 @@ func TestMachine_Match_Base(t *testing.T) {
 	}
 }
 
-func TestMachine_Match_Wildcard(t *testing.T) {
+func TestMachine_Default_Wildcard(t *testing.T) {
 	tests := []struct {
 		name     string
 		expr     string
@@ -212,6 +213,7 @@ func TestMachine_Match_Wildcard(t *testing.T) {
 				}{idx, off, ok}, "index mismatch for input %d (%s)", i, inputStr)
 
 				if ok { // If match, advance input by the whole pattern and set offset to 0
+					machine.Reset()
 					input, index, offset = input[idx+off:], 0, 0
 				} else { // If not match, advance input by idx and update offset
 					input, index, offset = input[idx:], 0, off
@@ -221,7 +223,7 @@ func TestMachine_Match_Wildcard(t *testing.T) {
 	}
 }
 
-func TestMachine_Match_Submatch(t *testing.T) {
+func TestMachine_Default_Submatch(t *testing.T) {
 	tests := []struct {
 		name     string
 		expr     string
@@ -245,52 +247,52 @@ func TestMachine_Match_Submatch(t *testing.T) {
 				{0, 11, true}, // "bkkkkkkkkkca" - matches "ab.*c" pattern
 			},
 		},
-		// {
-		// 	name:   "wildcard pattern with immediate match",
-		// 	expr:   "ab.*c",
-		// 	inputs: []string{"abc", "xyz"},
-		// 	expected: []struct {
-		// 		index  int
-		// 		offset int
-		// 		ok     bool
-		// 	}{
-		// 		{0, 3, true},  // "abc" - matches "abc" (.* matches empty)
-		// 		{3, 0, false}, // "xyz" - no match
-		// 	},
-		// },
-		// {
-		// 	name:   "wildcard pattern with middle characters",
-		// 	expr:   "ab.*c",
-		// 	inputs: []string{"ab123c", "def"},
-		// 	expected: []struct {
-		// 		index  int
-		// 		offset int
-		// 		ok     bool
-		// 	}{
-		// 		{0, 6, true},  // "ab123c" - matches "ab.*c"
-		// 		{3, 0, false}, // "def" - no match
-		// 	},
-		// },
-		// {
-		// 	name: "long stream with prefix wildcard",
-		// 	expr: "[a-z]+114514",
-		// 	inputs: []string{
-		// 		"ABCD abcd1",
-		// 		"14514 yeah",
-		// 		" 114514 abcd",
-		// 		"114514",
-		// 	},
-		// 	expected: []struct {
-		// 		index  int
-		// 		offset int
-		// 		ok     bool
-		// 	}{
-		// 		{5, 5, false},  // 01: partial match "abcd1" at end
-		// 		{0, 10, true},  // 02: matched the rest "14514"
-		// 		{13, 4, false}, // 03: must be alphabet before "114514", partial match at the end
-		// 		{0, 10, true},  // 04: matched
-		// 	},
-		// },
+		{
+			name:   "wildcard pattern with immediate match",
+			expr:   "ab.*c",
+			inputs: []string{"abc", "xyz"},
+			expected: []struct {
+				index  int
+				offset int
+				ok     bool
+			}{
+				{0, 3, true},  // "abc" - matches "abc" (.* matches empty)
+				{3, 0, false}, // "xyz" - no match
+			},
+		},
+		{
+			name:   "wildcard pattern with middle characters",
+			expr:   "ab.*c",
+			inputs: []string{"ab123c", "def"},
+			expected: []struct {
+				index  int
+				offset int
+				ok     bool
+			}{
+				{0, 6, true},  // "ab123c" - matches "ab.*c"
+				{3, 0, false}, // "def" - no match
+			},
+		},
+		{
+			name: "long stream with prefix wildcard",
+			expr: "[a-z]+114514",
+			inputs: []string{
+				"ABCD abcd1",
+				"14514 yeah",
+				" 114514 abcd",
+				"114514",
+			},
+			expected: []struct {
+				index  int
+				offset int
+				ok     bool
+			}{
+				{5, 5, false},  // 01: partial match "abcd1" at end
+				{0, 10, true},  // 02: matched the rest "14514"
+				{13, 4, false}, // 03: must be alphabet before "114514", partial match at the end
+				{0, 10, true},  // 04: matched
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -316,6 +318,7 @@ func TestMachine_Match_Submatch(t *testing.T) {
 				}{idx, off, ok}, "index mismatch for input %d (%s)", i, inputStr)
 
 				if ok { // If match, advance input by the whole pattern and set offset to 0
+					machine.Reset()
 					input, index, offset = input[idx+off:], 0, 0
 				} else { // If not match, advance input by idx and update offset
 					input, index, offset = input[idx:], 0, off

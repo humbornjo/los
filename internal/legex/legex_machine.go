@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"math"
 	"regexp/syntax"
+	"slices"
 )
 
 func (m *Machine) Match(index int, offset int, buf []byte) (int, int, bool) {
@@ -35,8 +36,23 @@ func (m *Machine) Match(index int, offset int, buf []byte) (int, int, bool) {
 		m.accum += shift
 		return index + shift, len(buf) - (index + shift), false
 	}
-	m.accum = 0
 	return m.matchcap[0], m.matchcap[1] - m.matchcap[0], true
+}
+
+func (m *Machine) Reset() {
+	m.accum = 0
+	m.matched = false
+	for i := range m.matchcap {
+		m.matchcap[i] = -1
+	}
+}
+
+func (m *Machine) Accum() int {
+	return m.accum
+}
+
+func (m *Machine) MatchCap() []int {
+	return slices.Clone(m.matchcap)
 }
 
 // A queue is a 'sparse array' holding pending threads of execution.
@@ -65,14 +81,14 @@ type thread struct {
 
 // A Machine holds all the state during an NFA simulation for p.
 type Machine struct {
-	re       *Regexp      // corresponding Regexp
-	p        *syntax.Prog // compiled program
-	q0, q1   queue        // two queues for runq, nextq
-	pool     []*thread    // pool of available threads
-	matched  bool         // whether a match was found
-	matchcap []int        // capture information for the match
+	re      *Regexp      // corresponding Regexp
+	p       *syntax.Prog // compiled program
+	q0, q1  queue        // two queues for runq, nextq
+	pool    []*thread    // pool of available threads
+	matched bool         // whether a match was found
 
-	accum int
+	accum    int   // accumulator for indexing correct pos
+	matchcap []int // capture information for the match
 }
 
 // alloc allocates a new thread with the given instruction.
@@ -99,12 +115,6 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 	// Start Op is InstFail startCond is ^EmptyOp(0)
 	if startCond == ^syntax.EmptyOp(0) {
 		return index, offset, false
-	}
-
-	// State reset
-	m.matched = false
-	for i := range m.matchcap {
-		m.matchcap[i] = -1
 	}
 
 	runq, nextq := &m.q0, &m.q1
