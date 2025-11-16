@@ -36,7 +36,6 @@ func (m *Machine) Match(index int, offset int, buf []byte) (int, int, bool) {
 		return index + shift, len(buf) - (index + shift), false
 	}
 	m.accum = 0
-	m.matched = false
 	return m.matchcap[0], m.matchcap[1] - m.matchcap[0], true
 }
 
@@ -102,13 +101,12 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 		return index, offset, false
 	}
 
-	// State reset is not needed since machine can be reused
-	// m.matched = false
-	// for i := range m.matchcap {
-	// 	m.matchcap[i] = -1
-	// }
+	// State reset
+	m.matched = false
+	for i := range m.matchcap {
+		m.matchcap[i] = -1
+	}
 
-	// This block is fine
 	runq, nextq := &m.q0, &m.q1
 
 	r, r1 := endOfText, endOfText // nolint: ineffassign
@@ -118,7 +116,7 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 		r1, width1 = i.step(index + offset + width)
 	}
 
-	// Trying to figure out what flag is
+	// TODO: Trying to figure out what flag is
 	var flag lazyFlag
 	if offset == 0 {
 		flag = newLazyFlag(-1, r)
@@ -158,12 +156,15 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 			}
 
 			// When prefix is already been matched, just goto weave
-			if len(m.re.prefix) == 0 || offset == len(m.re.prefix) {
+			if len(m.re.prefix) == 0 {
 				goto weave // time to add some threads
 			}
-			index, offset := m.matchPrefix(i, index, offset)
-			// TODO: advance r, width and r1, width1
+			index, offset = m.prologue(i, index, offset)
 			if offset == len(m.re.prefix) {
+				offset = 0
+				r, width = i.step(index)
+				r1, width1 = i.step(index + width)
+				flag = newLazyFlag(-1, r)
 				goto weave // time to add some threads
 			}
 
@@ -184,9 +185,6 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 		}
 
 		if !m.matched {
-			// if len(m.matchcap) > 0 {
-			// 	m.matchcap[0] = index + offset
-			// }
 			m.add(runq, uint32(m.p.Start), index+offset, nil, &flag, nil)
 		}
 		flag = newLazyFlag(r, r1)
@@ -206,7 +204,6 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 				r1, width1 = i.step(index + width)
 			}
 			flag = newLazyFlag(-1, r)
-			// m.add(runq, uint32(m.p.Start), index, m.matchcap, &flag, nil)
 			continue
 		}
 
@@ -220,7 +217,9 @@ func (m *Machine) match(i input, index int, offset int) (int, int, bool) {
 	return index, offset, m.matched
 }
 
-func (m *Machine) matchPrefix(i input, index int, offset int) (int, int) {
+// prologue match the prefix of regular expr, advance index and
+// offset if found a (potential) match.
+func (m *Machine) prologue(i input, index int, offset int) (int, int) {
 	n0, n1 := len(m.re.prefix), len(i.inner())
 	i0, i1 := offset, index+offset
 	for i0 < n0 && i1 < n1 {
