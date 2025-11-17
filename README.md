@@ -18,7 +18,7 @@ specific pattern in a continuous stream**
 Life of Speech support,
 
 - **Fixed pattern match**: Implemented with Knuth-Morris-Pratt (KMP) algorithm.
-- **Regex pattern match**: Implemented with the virtual machine used in Go STD lib `regex`.
+- **Regex pattern match**: Implemented with the virtual machine used in Go STD lib `regexp`.
 
 And you can use different pattern schema for head and tail (like fixed pattern for head and regex pattern for tail).
 
@@ -28,6 +28,7 @@ And you can use different pattern schema for head and tail (like fixed pattern f
 ## TODOs
 
 - [x] Avoid duplicate thread add during multiple match on Machine.
+- [ ] correct anchored pattern matching behavior.
 - [ ] Add test case for submatch and gnarly regular expressions.
 - [ ] Implement Onepass Machine and Backtrace Machine for stream matching.
 - [ ] improve performance on index advancing by integrating index calculation in thread walk.
@@ -52,6 +53,9 @@ OUTPUT: ["["]               // "b" partially match the pattern, prefixing "[" is
 MATCH : "erserk]"
 OUTPUT: ["berserk", "]"]    // matched, and the suffixing "]" is also returned as non-matched content
 ```
+
+It should be noted that "anchored" pattern will always match from the start of the stream to maintain the completeness of
+regular expression semantics.
 
 ## Quickstart
 
@@ -90,3 +94,7 @@ remains := matcher.Drain() // "ab"
 
 - [Go STD lib `regexp`](https://pkg.go.dev/regexp)
 - [Regular Expression Matching: the Virtual Machine Approach](https://swtch.com/~rsc/regexp/regexp2.html)
+
+## Alternatives
+
+- Intel [hyperscan](https://github.com/intel/hyperscan) and its Go binding [gohs](https://github.com/flier/gohs)
