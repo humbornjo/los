@@ -81,9 +81,9 @@ func (m *machineDefault) Match(index int, offset int, buf []byte) (int, int, boo
 func (m *machineDefault) match(i input, index int, offset int) (int, int, bool) {
 	startCond := m.re.cond
 
-	// Start Op is InstFail startCond is ^EmptyOp(0)
+	// syntax.InstFail => ^syntax.EmptyOp(0), advance all
 	if startCond == ^syntax.EmptyOp(0) {
-		return index, offset, false
+		return len(i.inner()), 0, false
 	}
 
 	runq, nextq := &m.q0, &m.q1
@@ -149,13 +149,6 @@ func (m *machineDefault) match(i input, index int, offset int) (int, int, bool) 
 
 			// Dude you are so fucked, not even finish prefix matching. Maybe next time.
 			return index, offset, false
-
-			// INFO: useless block, we dont focus on pos here
-			//
-			// if startCond&syntax.EmptyBeginText != 0 && pos != 0 {
-			// 	// Anchored match, past beginning of text.
-			// 	break
-			// }
 		}
 
 	weave: // Already in the middle of matching.
