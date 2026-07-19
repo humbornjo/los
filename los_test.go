@@ -83,6 +83,9 @@ func TestLos_Matcher_Kmp(t *testing.T) {
 }
 
 func TestLos_Matcher_Regex(t *testing.T) {
+	invalidByte := string([]byte{0xc2})
+	invalidMatch := invalidByte + "\x00-Go"
+
 	tests := []struct {
 		name           string
 		pair           *Pair
@@ -167,6 +170,72 @@ func TestLos_Matcher_Regex(t *testing.T) {
 					{state: STATE_TAIL, text: "!", matches: []string{"!"}},
 					{state: STATE_NONE, text: "rest", matches: []string{"rest"}},
 				},
+			},
+		},
+		{
+			name:     "preferred alternative waits for word-boundary lookahead",
+			pair:     NewPair(`\B(foo|fo)\B`, `END`, WithRegexHead(REGEX_MODE_PERL)),
+			contents: []string{"xfo", "oYEND"},
+			expected: [][]resultExpectation{
+				{{state: STATE_NONE, text: "x", matches: []string{"x"}}},
+				{
+					{state: STATE_HEAD, text: "foo", matches: []string{"foo", "foo"}},
+					{state: STATE_BODY, text: "Y", matches: []string{"Y"}},
+					{state: STATE_TAIL, text: "END", matches: []string{"END"}},
+				},
+			},
+		},
+		{
+			name:     "invalid utf8 sequence and captures span chunks",
+			pair:     NewPair(`(\x{FFFD})\x00-([[:alpha:]]+)`, `!`, WithRegexHead(REGEX_MODE_PERL)),
+			contents: []string{"pre" + invalidByte, "\x00-Go!"},
+			expected: [][]resultExpectation{
+				{{state: STATE_NONE, text: "pre", matches: []string{"pre"}}},
+				{
+					{state: STATE_HEAD, text: invalidMatch, matches: []string{invalidMatch, invalidByte, "Go"}},
+					{state: STATE_TAIL, text: "!", matches: []string{"!"}},
+				},
+			},
+		},
+		{
+			name: "multiline cycles preserve asymmetric captures and context",
+			pair: NewPair(
+				`(?m)^([[:alpha:]]+):(?:(\d+)|([[:alpha:]]+))$`, `(?m)^END$`,
+				WithRegexHead(REGEX_MODE_PERL),
+				WithRegexTail(REGEX_MODE_PERL),
+			),
+			contents: []string{"junk\nname:va", "lue\nEN", "D\nnext\ncount:4", "2\nEND\n"},
+			expected: [][]resultExpectation{
+				{{state: STATE_NONE, text: "junk\n", matches: []string{"junk\n"}}},
+				{
+					{state: STATE_HEAD, text: "name:value", matches: []string{"name:value", "name", "", "value"}},
+					{state: STATE_BODY, text: "\n", matches: []string{"\n"}},
+				},
+				{
+					{state: STATE_TAIL, text: "END", matches: []string{"END"}},
+					{state: STATE_NONE, text: "\nnext\n", matches: []string{"\nnext\n"}},
+				},
+				{
+					{state: STATE_HEAD, text: "count:42", matches: []string{"count:42", "count", "42", ""}},
+					{state: STATE_BODY, text: "\n", matches: []string{"\n"}},
+					{state: STATE_TAIL, text: "END", matches: []string{"END"}},
+					{state: STATE_NONE, text: "\n", matches: []string{"\n"}},
+				},
+			},
+			finish: true,
+		},
+		{
+			name:     "absolute end anchored regex tail resolves on finish",
+			pair:     NewPair(`BEGIN`, `([a-z]+)\z`, WithRegexTail(REGEX_MODE_PERL)),
+			contents: []string{"noiseBEG", "INpay", "load"},
+			expected: [][]resultExpectation{
+				{{state: STATE_NONE, text: "noise", matches: []string{"noise"}}},
+				{{state: STATE_HEAD, text: "BEGIN", matches: []string{"BEGIN"}}},
+				nil,
+			},
+			finish: true,
+			expectedFinal: []resultExpectation{
+				{state: STATE_TAIL, text: "payload", matches: []string{"payload", "payload"}},
 			},
 		},
 	}
