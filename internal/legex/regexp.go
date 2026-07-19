@@ -78,8 +78,8 @@ func (re *Regexp) Longest() {
 	re.longest = true
 }
 
-// CanMatchEmpty reports whether the expression can match without consuming a
-// rune in any valid text context.
+// CanMatchEmpty reports whether the expression can match without consuming
+// input in any valid surrounding text context.
 func (re *Regexp) CanMatchEmpty() bool {
 	contexts := []rune{endOfText, '\n', 'A', '!'}
 	for _, previous := range contexts {

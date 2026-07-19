@@ -286,6 +286,8 @@ again:
 		op := syntax.EmptyOp(inst.Arg)
 		if !m.final && rune(*cond) == endOfChunk &&
 			op&(syntax.EmptyEndLine|syntax.EmptyEndText|syntax.EmptyWordBoundary|syntax.EmptyNoWordBoundary) != 0 {
+			// Keep the unresolved assertion in queue order so a lower-priority
+			// match cannot be emitted before the next rune resolves it.
 			if t == nil {
 				t = m.alloc(inst)
 			} else {

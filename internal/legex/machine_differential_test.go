@@ -14,12 +14,13 @@ func TestLegex_StreamingMachineDifferential(t *testing.T) {
 		`a*`, `a*?`, `a+`, `a+?`, `a?`, `a??`, `a{2,3}`,
 		`(a|b)+`, `(ab)*c`, `a.*b`, `a.*?b`, `[ab]+c`,
 		`.`, `.*`, `.*?`, `^a`, `a$`, `\Aa\z`, `(?m)^a$`,
-		`\ba\b`, `\Ba\B`, `\B(foo|fo)\B`, `(a)?(b*)`, `(|a)*`, `((a|b)*)(c?)`,
+		`\ba\b`, `\Ba\B`, `foo$|fo`, `foo\b|fo`, `a?\b`, `a??\b`, `\B(foo|fo)\B`,
+		`(a)?(b*)`, `(|a)*`, `((a|b)*)(c?)`,
 		`[^\n]+`, `(?s:.+)`, `(?:ab|a)c`, `a(?:b|)`, `\w+`, `\W+`,
 	}
 	inputs := generatedInputs([]byte{'a', 'b', ' ', '\n'}, 4)
 	inputs = append(inputs,
-		"日本", "a日本b", "xfooo", string([]byte{0xff}), string([]byte{0xc2, 0x00}),
+		"日本", "a日本b", "foo", "xfooo", string([]byte{0xff}), string([]byte{0xc2, 0x00}),
 	)
 
 	for _, expr := range patterns {
@@ -41,9 +42,10 @@ func TestLegex_StreamingMachineDifferential(t *testing.T) {
 
 func TestLegex_StreamingPosixMachineDifferential(t *testing.T) {
 	patterns := []string{
-		`a|ab`, `(a|aa)+`, `a+`, `a{1,3}`, `(ab|a)b`, `[ab]+`, `(a*)(a*)`, `^a+$`,
+		`a|ab`, `(a|aa)+`, `a+`, `a{1,3}`, `(ab|a)b`, `[ab]+`, `(a*)(a*)`, `^a+$`, `foo$|fo`,
 	}
 	inputs := generatedInputs([]byte{'a', 'b', '\n'}, 4)
+	inputs = append(inputs, "foo")
 
 	for _, expr := range patterns {
 		standard := regexp.MustCompilePOSIX(expr)
