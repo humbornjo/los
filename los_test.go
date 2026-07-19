@@ -2,6 +2,7 @@ package los
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -256,6 +257,64 @@ func TestLos_Matcher_Regex(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLos_Matcher_LongTextWithGnarlySnippet(t *testing.T) {
+	head := "<<BEGIN kind=ALPHA id=2048>>"
+	tail := "<<END kind=ALPHA>>"
+	prefix := strings.Repeat("ordinary ", 700) +
+		"<<BEGIN kind=ALPHA id=20x8>> " +
+		strings.Repeat("preface ", 400)
+	body := "\n" + strings.Repeat("payload日本語 ", 500) +
+		"<<END kind=ALPH4>> " +
+		strings.Repeat("continuation ", 300) + "\n"
+	suffix := strings.Repeat("trailing ", 300)
+	input := prefix + head + body + tail + suffix
+	require.Greater(t, len(strings.Fields(input)), 1024)
+
+	matcher := NewMatcher(NewPair(
+		`<<BEGIN kind=([A-Z]+) id=([0-9]{4})>>`,
+		`<<END kind=([A-Z]+)>>`,
+		WithRegexHead(REGEX_MODE_PERL),
+		WithRegexTail(REGEX_MODE_PERL),
+	))
+	t.Cleanup(func() { require.NoError(t, matcher.Close()) })
+
+	var reconstructed, unmatched, matchedBody strings.Builder
+	var boundaries []resultExpectation
+	collect := func(results Results) {
+		for result := range results {
+			reconstructed.WriteString(result.String())
+			switch result.State() {
+			case STATE_NONE:
+				unmatched.WriteString(result.String())
+			case STATE_BODY:
+				matchedBody.WriteString(result.String())
+			case STATE_HEAD, STATE_TAIL:
+				boundaries = append(boundaries, resultExpectation{
+					state:   result.State(),
+					text:    result.String(),
+					matches: slices.Collect(result.Matches()),
+				})
+			}
+		}
+	}
+
+	chunkSizes := []int{1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233}
+	for offset, chunk := 0, 0; offset < len(input); chunk++ {
+		end := min(offset+chunkSizes[chunk%len(chunkSizes)], len(input))
+		collect(matcher.Match(input[offset:end]))
+		offset = end
+	}
+	collect(matcher.Finish())
+
+	require.Equal(t, input, reconstructed.String())
+	require.Equal(t, prefix+suffix, unmatched.String())
+	require.Equal(t, body, matchedBody.String())
+	require.Equal(t, []resultExpectation{
+		{state: STATE_HEAD, text: head, matches: []string{head, "ALPHA", "2048"}},
+		{state: STATE_TAIL, text: tail, matches: []string{tail, "ALPHA"}},
+	}, boundaries)
 }
 
 type resultExpectation struct {
