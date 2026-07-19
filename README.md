@@ -25,13 +25,15 @@ And you can use different pattern schema for head and tail (like fixed pattern f
 > STD `regexp` lib could actually support streaming data with some extension. See `match` function of `machine`, but
 > `regexp` did not exploit this feature, It is more like they omit the need for resumable regex matching.
 
-## TODOs
+## Implementation status
 
-- [x] Avoid duplicate thread add during multiple match on Machine.
-- [ ] correct anchored pattern matching behavior.
-- [ ] Add test case for submatch and gnarly regular expressions.
-- [ ] Implement Onepass Machine and Backtrace Machine for stream matching.
-- [ ] improve performance on index advancing by integrating index calculation in thread walk.
+The regex path uses one ordered NFA execution engine for all patterns. It supports Go regexp syntax and observable
+matching semantics, including Perl leftmost-first and POSIX leftmost-longest priority, captures, anchors, word
+boundaries, invalid UTF-8, and matches split at arbitrary byte boundaries.
+
+Go's one-pass and bit-state backtracking engines are performance optimizations with the same observable semantics; they
+are not separate LOS feature paths. Optional specialized execution engines and avoiding replay of long retained
+candidates remain performance work, not regex correctness gaps.
 
 ## Explain
 

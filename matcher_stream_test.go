@@ -101,3 +101,62 @@ func TestLos_RegexResultAdjustsCapturesAfterUnmatchedInput(t *testing.T) {
 	}, results)
 	require.Equal(t, []string{"ac", ""}, slices.Collect(results[1].Matches()))
 }
+
+func TestLos_MatcherAlternatesRegexHeadAndTailAcrossChunks(t *testing.T) {
+	matcher := NewMatcher(NewPair(
+		`<([a-z]+)>`, `</([a-z]+)>`,
+		WithRegexHead(REGEX_MODE_PERL),
+		WithRegexTail(REGEX_MODE_PERL),
+	))
+	t.Cleanup(func() { require.NoError(t, matcher.Close()) })
+
+	chunks := []string{"pre<ta", "g>one</ta", "g>mid<x>two</x>post"}
+	expected := [][]Result{
+		{textResult{state: STATE_NONE, raw: []byte("pre")}},
+		{
+			regexResult{state: STATE_HEAD, raw: []byte("<tag>"), matchcap: []int{0, 5, 1, 4}},
+			textResult{state: STATE_BODY, raw: []byte("one")},
+		},
+		{
+			regexResult{state: STATE_TAIL, raw: []byte("</tag>"), matchcap: []int{0, 6, 2, 5}},
+			textResult{state: STATE_NONE, raw: []byte("mid")},
+			regexResult{state: STATE_HEAD, raw: []byte("<x>"), matchcap: []int{0, 3, 1, 2}},
+			textResult{state: STATE_BODY, raw: []byte("two")},
+			regexResult{state: STATE_TAIL, raw: []byte("</x>"), matchcap: []int{0, 4, 2, 3}},
+			textResult{state: STATE_NONE, raw: []byte("post")},
+		},
+	}
+
+	for i, chunk := range chunks {
+		require.Equal(t, expected[i], slices.Collect(matcher.Match(chunk)))
+	}
+}
+
+func TestLos_MatcherResetOperationsStartNewLogicalStream(t *testing.T) {
+	tests := []struct {
+		name   string
+		finish bool
+	}{
+		{name: "drain"},
+		{name: "finish", finish: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matcher := NewMatcher(NewPair(`^abc`, `!`, WithRegexHead(REGEX_MODE_PERL)))
+			t.Cleanup(func() { require.NoError(t, matcher.Close()) })
+
+			require.Equal(t, []Result{textResult{state: STATE_NONE, raw: []byte("x")}},
+				slices.Collect(matcher.Match("x")))
+			if tt.finish {
+				require.Empty(t, slices.Collect(matcher.Finish()))
+			} else {
+				require.Empty(t, matcher.Drain())
+			}
+			require.Equal(t, []Result{
+				regexResult{state: STATE_HEAD, raw: []byte("abc"), matchcap: []int{0, 3}},
+				textResult{state: STATE_TAIL, raw: []byte("!")},
+			}, slices.Collect(matcher.Match("abc!")))
+		})
+	}
+}

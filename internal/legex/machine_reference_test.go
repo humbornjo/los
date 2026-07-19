@@ -94,6 +94,20 @@ func TestLegex_PosixMachineMatchesRegexp(t *testing.T) {
 	}
 }
 
+func TestLegex_LongestMachineMatchesRegexp(t *testing.T) {
+	standard := regexp.MustCompile(`a|ab`)
+	standard.Longest()
+	re, err := legex.Compile(`a|ab`)
+	require.NoError(t, err)
+	re.Longest()
+	machine := re.Get()
+	t.Cleanup(machine.Close)
+
+	_, _, ok := machine.Finish([]byte("ab"))
+	require.True(t, ok)
+	require.Equal(t, standard.FindStringSubmatchIndex("ab"), machine.MatchCap())
+}
+
 func TestLegex_MachineResumesAcrossChunks(t *testing.T) {
 	tests := []struct {
 		name     string
