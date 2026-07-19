@@ -31,6 +31,9 @@ The regex path uses one ordered NFA execution engine for all patterns. It suppor
 matching semantics, including Perl leftmost-first and POSIX leftmost-longest priority, captures, anchors, word
 boundaries, invalid UTF-8, and matches split at arbitrary byte boundaries.
 
+When a matcher has multiple pairs, one Aho-Corasick automaton scans all fixed heads while each regex head keeps its own
+streaming NFA. The matcher merges their candidates without changing streaming priority semantics.
+
 Go's one-pass and bit-state backtracking engines are performance optimizations with the same observable semantics; they
 are not separate LOS feature paths. Optional specialized execution engines and avoiding replay of long retained
 candidates remain performance work, not regex correctness gaps.
@@ -67,7 +70,7 @@ matcher := los.NewMatcher(
     "ab(.*?)c",
     "xyz",
     los.WithRegexHead(los.REGEX_MODE_PERL),
-  ),
+  ).WithValue("block"),
 )
 defer matcher.Close()
 
@@ -77,6 +80,7 @@ for _, content := range contents {
   for result := range matcher.Match(content) {
     switch result.State() {
     case los.STATE_HEAD:
+      _ = result.Value() // "block"
       // ["ab_c", "_"]
       for match := range result.Matches() {
         // do something with submatch
@@ -95,6 +99,26 @@ for result := range matcher.Finish() {
   _ = result
 }
 ```
+
+## Multiple pairs
+
+Pass more than one pair to scan several possible heads in the same stream:
+
+```go
+matcher := los.NewMatcher(
+  los.NewPair("<think>", "</think>").WithValue("think"),
+  los.NewPair(`<tool name="([^"]+)">`, "</tool>",
+    los.WithRegexHead(los.REGEX_MODE_PERL),
+  ).WithValue("tool"),
+)
+```
+
+The earliest head wins. If heads start at the same byte, pair registration order breaks the tie, including equivalent
+or duplicate heads. Once a head wins, only that pair's tail is active; other heads are body text, so matches do not
+nest.
+
+`Result.Value` returns the selected pair's snapshotted value for `STATE_HEAD`, `STATE_BODY`, and `STATE_TAIL` results.
+It returns `nil` for `STATE_NONE`. Changing a pair's value after constructing a matcher does not change that matcher.
 
 ## Streaming semantics
 

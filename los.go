@@ -27,6 +27,7 @@ type Pair struct {
 	headRegex regexMode
 	tail      string
 	tailRegex regexMode
+	value     any
 }
 
 type pairOption func(*Pair) *Pair
@@ -69,7 +70,33 @@ func NewPair(head, tail string, opts ...pairOption) *Pair {
 	return pair
 }
 
-func NewMatcher(pair *Pair) Matcher {
+// WithValue labels results produced while this pair is active.
+func (p *Pair) WithValue(value any) *Pair {
+	p.value = value
+	return p
+}
+
+// NewMatcher builds a streaming matcher. Multiple pairs are selected by the
+// earliest head, with registration order breaking ties at the same position.
+func NewMatcher(first *Pair, rest ...*Pair) Matcher {
+	if first == nil {
+		panic("los: pair must not be nil")
+	}
+	if len(rest) > 0 {
+		pairs := make([]*Pair, 1, len(rest)+1)
+		pairs[0] = first
+		for _, pair := range rest {
+			if pair == nil {
+				panic("los: pair must not be nil")
+			}
+			pairs = append(pairs, pair)
+		}
+		return newAutomationMatcher(pairs)
+	}
+	return newMatcher(first)
+}
+
+func newMatcher(pair *Pair) Matcher {
 	var patHead, parTail pattern
 	if pair.headRegex == _REGEX_MODE_NONE {
 		patHead = newKmpPattern(pair.head)
@@ -87,6 +114,7 @@ func NewMatcher(pair *Pair) Matcher {
 		buffer:   bytes.NewBuffer(nil),
 		patterns: [2]pattern{patHead, parTail},
 		context:  legex.NewStreamContext(),
+		value:    pair.value,
 	}
 }
 
@@ -122,6 +150,9 @@ type Result interface {
 	Raw() []byte
 	// State returns the state of the result content
 	State() State
+	// Value returns the value configured on the active pair. Unmatched text
+	// outside a pair returns nil.
+	Value() any
 	// String is a shortcut for string(Raw())
 	String() string
 	// Matches returns a sequence of matched string
@@ -139,6 +170,7 @@ var _ Result = textResult{}
 type textResult struct {
 	state State
 	raw   []byte
+	value any
 }
 
 func (r textResult) Raw() []byte {
@@ -153,6 +185,10 @@ func (r textResult) State() State {
 	return r.state
 }
 
+func (r textResult) Value() any {
+	return r.value
+}
+
 func (r textResult) Matches() iter.Seq[string] {
 	return func(yield func(string) bool) {
 		yield(r.String())
@@ -165,6 +201,7 @@ type regexResult struct {
 	state    State
 	raw      []byte
 	matchcap []int
+	value    any
 }
 
 func (r regexResult) Raw() []byte {
@@ -177,6 +214,10 @@ func (r regexResult) String() string {
 
 func (r regexResult) State() State {
 	return r.state
+}
+
+func (r regexResult) Value() any {
+	return r.value
 }
 
 func (r regexResult) Matches() iter.Seq[string] {
@@ -205,6 +246,7 @@ type matcher struct {
 	buffer   *bytes.Buffer
 	patterns [2]pattern
 	context  legex.StreamContext
+	value    any
 }
 
 func (m *matcher) Drain() string {
@@ -250,7 +292,11 @@ func (m *matcher) Match(s string) Results {
 }
 
 func (m *matcher) build(pattern pattern, n int, state State) Result {
-	result := pattern.Build(m.buffer, n, state)
+	var value any
+	if state != STATE_NONE {
+		value = m.value
+	}
+	result := pattern.Build(m.buffer, n, state, value)
 	m.context = m.context.Advance(result.Raw())
 	return result
 }
@@ -310,7 +356,7 @@ type pattern interface {
 	Clear()
 
 	// Build return a Result
-	Build(buffer *bytes.Buffer, n int, state State) Result
+	Build(buffer *bytes.Buffer, n int, state State, value any) Result
 }
 
 // Implemented with Knuth-Morris-Pratt algorithm for forward
@@ -382,8 +428,8 @@ func (pat *kmpPattern) Match(_ legex.StreamContext, index int, offset int, buffe
 
 func (pat *kmpPattern) Clear() {}
 
-func (pat *kmpPattern) Build(buffer *bytes.Buffer, n int, state State) Result {
-	return textResult{state, buffer.Next(n)}
+func (pat *kmpPattern) Build(buffer *bytes.Buffer, n int, state State, value any) Result {
+	return textResult{state: state, raw: buffer.Next(n), value: value}
 }
 
 // Implemented with regular expression VM for forward search.
@@ -423,9 +469,9 @@ func (pat *regexPattern) Finish(ctx legex.StreamContext, buffer []byte) (int, in
 	return pat.Machine.Finish(ctx, buffer)
 }
 
-func (pat *regexPattern) Build(buffer *bytes.Buffer, n int, state State) Result {
+func (pat *regexPattern) Build(buffer *bytes.Buffer, n int, state State, value any) Result {
 	if state%2 == 0 {
-		return textResult{state, buffer.Next(n)}
+		return textResult{state: state, raw: buffer.Next(n), value: value}
 	}
 
 	matchcap := pat.MatchCap()
@@ -436,5 +482,5 @@ func (pat *regexPattern) Build(buffer *bytes.Buffer, n int, state State) Result 
 		}
 	}
 	pat.Reset()
-	return regexResult{state, buffer.Next(n), matchcap}
+	return regexResult{state: state, raw: buffer.Next(n), matchcap: matchcap, value: value}
 }

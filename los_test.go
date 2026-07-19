@@ -21,7 +21,7 @@ func TestLos_Matcher_Kmp(t *testing.T) {
 		{
 			name:            "pass through empty content",
 			contents:        []string{"test"},
-			expectedResults: [][]Result{{textResult{STATE_NONE, []byte("test")}}},
+			expectedResults: [][]Result{{textResult{state: STATE_NONE, raw: []byte("test")}}},
 			drainedContent:  "", // Remaining unmatched content
 		},
 		{
@@ -33,18 +33,18 @@ func TestLos_Matcher_Kmp(t *testing.T) {
 		{
 			name:            "single complete prologue",
 			contents:        []string{"prologue"},
-			expectedResults: [][]Result{{textResult{STATE_HEAD, []byte("prologue")}}},
+			expectedResults: [][]Result{{textResult{state: STATE_HEAD, raw: []byte("prologue")}}},
 			drainedContent:  "", // All content matched
 		},
 		{
 			name:     "multiple contents with complete matches",
 			contents: []string{"prologue", "content", "epilogue"},
 			expectedResults: [][]Result{{
-				textResult{STATE_HEAD, []byte("prologue")},
+				textResult{state: STATE_HEAD, raw: []byte("prologue")},
 			}, {
-				textResult{STATE_BODY, []byte("content")},
+				textResult{state: STATE_BODY, raw: []byte("content")},
 			}, {
-				textResult{STATE_TAIL, []byte("epilogue")},
+				textResult{state: STATE_TAIL, raw: []byte("epilogue")},
 			}},
 			drainedContent: "", // All content matched across calls
 		},
@@ -52,9 +52,9 @@ func TestLos_Matcher_Kmp(t *testing.T) {
 			name:     "combined content with both prologue and epilogue",
 			contents: []string{"prologue middle content epilogue"},
 			expectedResults: [][]Result{{
-				textResult{STATE_HEAD, []byte("prologue")},
-				textResult{STATE_BODY, []byte(" middle content ")},
-				textResult{STATE_TAIL, []byte("epilogue")},
+				textResult{state: STATE_HEAD, raw: []byte("prologue")},
+				textResult{state: STATE_BODY, raw: []byte(" middle content ")},
+				textResult{state: STATE_TAIL, raw: []byte("epilogue")},
 			}},
 			drainedContent: "", // All content matched
 		},
@@ -62,8 +62,8 @@ func TestLos_Matcher_Kmp(t *testing.T) {
 			name:     "complete prologue and partial epilogue",
 			contents: []string{"prologuedata", "epilo"},
 			expectedResults: [][]Result{{
-				textResult{STATE_HEAD, []byte("prologue")},
-				textResult{STATE_BODY, []byte("data")},
+				textResult{state: STATE_HEAD, raw: []byte("prologue")},
+				textResult{state: STATE_BODY, raw: []byte("data")},
 			}, nil},
 			drainedContent: "epilo", // All content matched
 		},
@@ -321,6 +321,7 @@ type resultExpectation struct {
 	state   State
 	text    string
 	matches []string
+	value   any
 }
 
 func requireMatcherResults(t *testing.T, expected []resultExpectation, results Results) {
@@ -331,5 +332,6 @@ func requireMatcherResults(t *testing.T, expected []resultExpectation, results R
 		require.Equal(t, expected[i].state, result.State(), "result %d state", i)
 		require.Equal(t, expected[i].text, result.String(), "result %d text", i)
 		require.Equal(t, expected[i].matches, slices.Collect(result.Matches()), "result %d matches", i)
+		require.Equal(t, expected[i].value, result.Value(), "result %d value", i)
 	}
 }

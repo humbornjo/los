@@ -272,6 +272,6 @@ func (emptyTestPattern) Reset() {}
 
 func (emptyTestPattern) Clear() {}
 
-func (emptyTestPattern) Build(*bytes.Buffer, int, State) Result {
+func (emptyTestPattern) Build(*bytes.Buffer, int, State, any) Result {
 	panic("unreachable")
 }
