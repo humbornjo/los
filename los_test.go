@@ -83,84 +83,125 @@ func TestLos_Matcher_Kmp(t *testing.T) {
 }
 
 func TestLos_Matcher_Regex(t *testing.T) {
-	matcher := NewMatcher(
-		NewPair("ab(.*)c", "xyz", WithRegexHead(REGEX_MODE_PERL)),
-	)
-	defer matcher.Close() // nolint: errcheck
-
 	tests := []struct {
-		name            string
-		contents        []string
-		expectedResults [][]Result
-		drainedContent  string
-		expectedFinal   []Result
+		name           string
+		pair           *Pair
+		contents       []string
+		expected       [][]resultExpectation
+		finish         bool
+		expectedFinal  []resultExpectation
+		drainedContent string
 	}{
-		// {
-		// 	name:            "pass through empty content",
-		// 	contents:        []string{"test"},
-		// 	expectedResults: [][]Result{{textResult{STATE_NONE, []byte("test")}}},
-		// 	drainedContent:  "", // Remaining unmatched content
-		// },
-		// {
-		// 	name:            "single partial match 'pro'",
-		// 	contents:        []string{"abABC"},
-		// 	expectedResults: [][]Result{nil}, // No complete match, results should be empty
-		// 	drainedContent:  "abABC",         // Remaining unmatched content
-		// },
 		{
-			name:            "single complete head match",
-			contents:        []string{"abABCc"},
-			expectedResults: [][]Result{nil},
-			expectedFinal: []Result{
-				regexResult{STATE_HEAD, []byte("abABCc"), []int{0, 6, 2, 5}},
+			name:     "multiple fixed-tail cycles across chunks",
+			pair:     NewPair(`ab([A-Z]+)c`, `xyz`, WithRegexHead(REGEX_MODE_PERL)),
+			contents: []string{"noisea", "bFO", "Ocbodyx", "yzgapabBARcinside", "xyzend"},
+			expected: [][]resultExpectation{
+				{{state: STATE_NONE, text: "noise", matches: []string{"noise"}}},
+				nil,
+				{
+					{state: STATE_HEAD, text: "abFOOc", matches: []string{"abFOOc", "FOO"}},
+					{state: STATE_BODY, text: "body", matches: []string{"body"}},
+				},
+				{
+					{state: STATE_TAIL, text: "xyz", matches: []string{"xyz"}},
+					{state: STATE_NONE, text: "gap", matches: []string{"gap"}},
+					{state: STATE_HEAD, text: "abBARc", matches: []string{"abBARc", "BAR"}},
+					{state: STATE_BODY, text: "inside", matches: []string{"inside"}},
+				},
+				{
+					{state: STATE_TAIL, text: "xyz", matches: []string{"xyz"}},
+					{state: STATE_NONE, text: "end", matches: []string{"end"}},
+				},
 			},
 		},
-		// {
-		// 	name:     "multiple contents with complete matches",
-		// 	contents: []string{"prologue", "content", "epilogue"},
-		// 	expectedResults: [][]Result{{
-		// 		textResult{STATE_HEAD, []byte("prologue")},
-		// 	}, {
-		// 		textResult{STATE_BODY, []byte("content")},
-		// 	}, {
-		// 		textResult{STATE_TAIL, []byte("epilogue")},
-		// 	}},
-		// 	drainedContent: "", // All content matched across calls
-		// },
-		// {
-		// 	name:     "combined content with both prologue and epilogue",
-		// 	contents: []string{"prologue middle content epilogue"},
-		// 	expectedResults: [][]Result{{
-		// 		textResult{STATE_HEAD, []byte("prologue")},
-		// 		textResult{STATE_BODY, []byte(" middle content ")},
-		// 		textResult{STATE_TAIL, []byte("epilogue")},
-		// 	}},
-		// 	drainedContent: "", // All content matched
-		// },
-		// {
-		// 	name:     "complete prologue and partial epilogue",
-		// 	contents: []string{"prologuedata", "epilo"},
-		// 	expectedResults: [][]Result{{
-		// 		textResult{STATE_HEAD, []byte("prologue")},
-		// 		textResult{STATE_BODY, []byte("data")},
-		// 	}, nil},
-		// 	drainedContent: "epilo", // All content matched
-		// },
+		{
+			name: "regex head and tail with optional capture and unicode body",
+			pair: NewPair(
+				`<([a-z]+)(?: id=([0-9]+))?>`, `</([a-z]+)>`,
+				WithRegexHead(REGEX_MODE_PERL),
+				WithRegexTail(REGEX_MODE_PERL),
+			),
+			contents: []string{"pre<item id=4", "2>日本</it", "em>mid<empty>", "日本</empty>post"},
+			expected: [][]resultExpectation{
+				{{state: STATE_NONE, text: "pre", matches: []string{"pre"}}},
+				{
+					{state: STATE_HEAD, text: "<item id=42>", matches: []string{"<item id=42>", "item", "42"}},
+					{state: STATE_BODY, text: "日本", matches: []string{"日本"}},
+				},
+				{
+					{state: STATE_TAIL, text: "</item>", matches: []string{"</item>", "item"}},
+					{state: STATE_NONE, text: "mid", matches: []string{"mid"}},
+					{state: STATE_HEAD, text: "<empty>", matches: []string{"<empty>", "empty", ""}},
+				},
+				{
+					{state: STATE_BODY, text: "日本", matches: []string{"日本"}},
+					{state: STATE_TAIL, text: "</empty>", matches: []string{"</empty>", "empty"}},
+					{state: STATE_NONE, text: "post", matches: []string{"post"}},
+				},
+			},
+			finish: true,
+		},
+		{
+			name:     "finish resolves greedy head and releases partial tail",
+			pair:     NewPair(`ab(.*)c`, `xyz`, WithRegexHead(REGEX_MODE_PERL)),
+			contents: []string{"prefixabA", "BCcbodyxy"},
+			expected: [][]resultExpectation{
+				{{state: STATE_NONE, text: "prefix", matches: []string{"prefix"}}},
+				nil,
+			},
+			finish: true,
+			expectedFinal: []resultExpectation{
+				{state: STATE_HEAD, text: "abABCc", matches: []string{"abABCc", "ABC"}},
+				{state: STATE_BODY, text: "bodyxy", matches: []string{"bodyxy"}},
+			},
+		},
+		{
+			name:     "posix head chooses longest alternative",
+			pair:     NewPair(`a|aa`, `!`, WithRegexHead(REGEX_MODE_POSIX)),
+			contents: []string{"a", "a!rest"},
+			expected: [][]resultExpectation{
+				nil,
+				{
+					{state: STATE_HEAD, text: "aa", matches: []string{"aa"}},
+					{state: STATE_TAIL, text: "!", matches: []string{"!"}},
+					{state: STATE_NONE, text: "rest", matches: []string{"rest"}},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			matcher := NewMatcher(tt.pair)
+			t.Cleanup(func() { require.NoError(t, matcher.Close()) })
+
 			for i, content := range tt.contents {
-				expected := tt.expectedResults[i]
-				got := slices.Collect(matcher.Match(content))
-				require.Equal(t, expected, got)
+				requireMatcherResults(t, tt.expected[i], matcher.Match(content))
 			}
 
-			if tt.expectedFinal != nil {
-				require.Equal(t, tt.expectedFinal, slices.Collect(matcher.Finish()))
+			if tt.finish {
+				requireMatcherResults(t, tt.expectedFinal, matcher.Finish())
 			} else {
 				require.Equal(t, tt.drainedContent, matcher.Drain())
 			}
 		})
+	}
+}
+
+type resultExpectation struct {
+	state   State
+	text    string
+	matches []string
+}
+
+func requireMatcherResults(t *testing.T, expected []resultExpectation, results Results) {
+	t.Helper()
+	actual := slices.Collect(results)
+	require.Len(t, actual, len(expected))
+	for i, result := range actual {
+		require.Equal(t, expected[i].state, result.State(), "result %d state", i)
+		require.Equal(t, expected[i].text, result.String(), "result %d text", i)
+		require.Equal(t, expected[i].matches, slices.Collect(result.Matches()), "result %d matches", i)
 	}
 }
