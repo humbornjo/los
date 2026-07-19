@@ -82,7 +82,12 @@ func NewMatcher(pair *Pair) Matcher {
 	} else {
 		parTail = newRegexPattern(pair.tail, pair.tailRegex)
 	}
-	return &matcher{STATE_NONE, 0, 0, bytes.NewBuffer(nil), [2]pattern{patHead, parTail}}
+	return &matcher{
+		state:    STATE_NONE,
+		buffer:   bytes.NewBuffer(nil),
+		patterns: [2]pattern{patHead, parTail},
+		context:  legex.NewStreamContext(),
+	}
 }
 
 type Matcher interface {
@@ -199,11 +204,13 @@ type matcher struct {
 	offset   int
 	buffer   *bytes.Buffer
 	patterns [2]pattern
+	context  legex.StreamContext
 }
 
 func (m *matcher) Drain() string {
 	defer m.buffer.Reset()
 	m.index, m.offset, m.state = 0, 0, STATE_NONE
+	m.context = legex.NewStreamContext()
 	for _, pattern := range m.patterns {
 		pattern.Reset()
 	}
@@ -216,16 +223,19 @@ func (m *matcher) Match(s string) Results {
 	return func(yield func(Result) bool) {
 	encore:
 		pattern, buffer := m.patterns[m.state>>1], m.buffer.Bytes()
-		index, offset, ok := pattern.Match(m.index, m.offset, buffer)
+		index, offset, ok := pattern.Match(m.context, m.index, m.offset, buffer)
 		if ok {
+			if offset == 0 {
+				panic("los: pattern matched empty input")
+			}
 			state := m.state
 			m.index, m.offset = 0, offset
 			if index > 0 &&
-				!yield(pattern.Build(m.buffer, index, state)) {
+				!yield(m.build(pattern, index, state)) {
 				return
 			}
 			m.offset, m.state = 0, state^0b10
-			if !yield(pattern.Build(m.buffer, offset, state+1)) {
+			if !yield(m.build(pattern, offset, state+1)) {
 				return
 			}
 			goto encore
@@ -234,9 +244,15 @@ func (m *matcher) Match(s string) Results {
 		if m.index == 0 {
 			return
 		}
-		yield(pattern.Build(m.buffer, index, m.state))
+		yield(m.build(pattern, index, m.state))
 		m.index = 0
 	}
+}
+
+func (m *matcher) build(pattern pattern, n int, state State) Result {
+	result := pattern.Build(m.buffer, n, state)
+	m.context = m.context.Advance(result.Raw())
+	return result
 }
 
 func (m *matcher) Finish() Results {
@@ -244,6 +260,7 @@ func (m *matcher) Finish() Results {
 		defer func() {
 			m.index, m.offset, m.state = 0, 0, STATE_NONE
 			m.buffer.Reset()
+			m.context = legex.NewStreamContext()
 			for _, pattern := range m.patterns {
 				pattern.Reset()
 			}
@@ -252,15 +269,18 @@ func (m *matcher) Finish() Results {
 		for m.buffer.Len() > 0 {
 			state := m.state
 			pattern := m.patterns[state>>1]
-			index, length, ok := pattern.Finish(m.buffer.Bytes())
-			if index > 0 && !yield(pattern.Build(m.buffer, index, state)) {
+			index, length, ok := pattern.Finish(m.context, m.buffer.Bytes())
+			if ok && length == 0 {
+				panic("los: pattern matched empty input")
+			}
+			if index > 0 && !yield(m.build(pattern, index, state)) {
 				return
 			}
 			if !ok {
 				return
 			}
 			m.state = state ^ 0b10
-			if !yield(pattern.Build(m.buffer, length, state+1)) {
+			if !yield(m.build(pattern, length, state+1)) {
 				return
 			}
 		}
@@ -282,8 +302,8 @@ func (m *matcher) Close() error {
 type pattern interface {
 	// Match advance the Match index and offset to release the
 	// unmatched string in buffer ASAP.
-	Match(index int, offset int, s []byte) (newIndex int, newOffset int, ok bool)
-	Finish(s []byte) (index int, length int, ok bool)
+	Match(ctx legex.StreamContext, index int, offset int, s []byte) (newIndex int, newOffset int, ok bool)
+	Finish(ctx legex.StreamContext, s []byte) (index int, length int, ok bool)
 	Reset()
 
 	// Clear clean up the inner state of pattern
@@ -327,8 +347,8 @@ func newKmpPattern(source string) *kmpPattern {
 	return &kmpPattern{computeLpsArray(source), len(source), source}
 }
 
-func (pat *kmpPattern) Finish(buffer []byte) (int, int, bool) {
-	index, length, ok := pat.Match(0, 0, buffer)
+func (pat *kmpPattern) Finish(ctx legex.StreamContext, buffer []byte) (int, int, bool) {
+	index, length, ok := pat.Match(ctx, 0, 0, buffer)
 	if !ok {
 		return len(buffer), 0, false
 	}
@@ -337,7 +357,7 @@ func (pat *kmpPattern) Finish(buffer []byte) (int, int, bool) {
 
 func (pat *kmpPattern) Reset() {}
 
-func (pat *kmpPattern) Match(index int, offset int, buffer []byte) (int, int, bool) {
+func (pat *kmpPattern) Match(_ legex.StreamContext, index int, offset int, buffer []byte) (int, int, bool) {
 	if offset == pat.length {
 		return index, offset, true
 	}
@@ -385,26 +405,22 @@ func newRegexPattern(pattern string, mode regexMode) *regexPattern {
 	default:
 		panic("unreachable")
 	}
-	pat := &regexPattern{re.Get()}
-	_, length, ok := pat.Finish(nil)
-	pat.Reset()
-	if ok && length == 0 {
-		pat.Close()
+	if re.CanMatchEmpty() {
 		panic("los: pattern must not match empty input")
 	}
-	return pat
+	return &regexPattern{re.Get()}
 }
 
 func (pat *regexPattern) Clear() {
 	pat.Close()
 }
 
-func (pat *regexPattern) Match(_, _ int, buffer []byte) (int, int, bool) {
-	return pat.Machine.Match(buffer)
+func (pat *regexPattern) Match(ctx legex.StreamContext, _, _ int, buffer []byte) (int, int, bool) {
+	return pat.Machine.Match(ctx, buffer)
 }
 
-func (pat *regexPattern) Finish(buffer []byte) (int, int, bool) {
-	return pat.Machine.Finish(buffer)
+func (pat *regexPattern) Finish(ctx legex.StreamContext, buffer []byte) (int, int, bool) {
+	return pat.Machine.Finish(ctx, buffer)
 }
 
 func (pat *regexPattern) Build(buffer *bytes.Buffer, n int, state State) Result {

@@ -14,12 +14,12 @@ func TestLegex_StreamingMachineDifferential(t *testing.T) {
 		`a*`, `a*?`, `a+`, `a+?`, `a?`, `a??`, `a{2,3}`,
 		`(a|b)+`, `(ab)*c`, `a.*b`, `a.*?b`, `[ab]+c`,
 		`.`, `.*`, `.*?`, `^a`, `a$`, `\Aa\z`, `(?m)^a$`,
-		`\ba\b`, `\Ba\B`, `(a)?(b*)`, `(|a)*`, `((a|b)*)(c?)`,
+		`\ba\b`, `\Ba\B`, `\B(foo|fo)\B`, `(a)?(b*)`, `(|a)*`, `((a|b)*)(c?)`,
 		`[^\n]+`, `(?s:.+)`, `(?:ab|a)c`, `a(?:b|)`, `\w+`, `\W+`,
 	}
 	inputs := generatedInputs([]byte{'a', 'b', ' ', '\n'}, 4)
 	inputs = append(inputs,
-		"日本", "a日本b", string([]byte{0xff}), string([]byte{0xc2, 0x00}),
+		"日本", "a日本b", "xfooo", string([]byte{0xff}), string([]byte{0xc2, 0x00}),
 	)
 
 	for _, expr := range patterns {
@@ -71,12 +71,13 @@ func assertStreamingMatch(t *testing.T, expr, input string, chunks []string, exp
 	require.NoError(t, err)
 	machine := re.Get()
 	defer machine.Close()
+	ctx := legex.NewStreamContext()
 
 	retained := make([]byte, 0, len(input))
 	released := 0
 	for _, chunk := range chunks {
 		retained = append(retained, chunk...)
-		index, length, ok := machine.Match(retained)
+		index, length, ok := machine.Match(ctx, retained)
 		require.GreaterOrEqual(t, index, 0, "expr=%q input=%q chunks=%q", expr, input, chunks)
 		require.GreaterOrEqual(t, length, 0, "expr=%q input=%q chunks=%q", expr, input, chunks)
 		require.LessOrEqual(t, index+length, len(retained), "expr=%q input=%q chunks=%q", expr, input, chunks)
@@ -86,11 +87,12 @@ func assertStreamingMatch(t *testing.T, expr, input string, chunks []string, exp
 			return
 		}
 		require.Equal(t, len(retained), index+length, "expr=%q input=%q chunks=%q", expr, input, chunks)
+		ctx = ctx.Advance(retained[:index])
 		retained = retained[index:]
 		released += index
 	}
 
-	index, length, ok := machine.Finish(retained)
+	index, length, ok := machine.Finish(ctx, retained)
 	if expected == nil {
 		require.False(t, ok, "expr=%q input=%q chunks=%q", expr, input, chunks)
 		require.Equal(t, len(retained), index, "expr=%q input=%q chunks=%q", expr, input, chunks)

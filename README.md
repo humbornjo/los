@@ -106,8 +106,8 @@ Call `Finish` after the final chunk. It resolves end-of-text assertions, emits t
 and resets the matcher for a new logical stream. Use `Drain` instead when abandoning a stream: it returns the buffered
 text without applying final regex matching and resets the matcher.
 
-Head and tail patterns must consume at least one byte. `NewMatcher` rejects fixed or regex patterns that can match empty
-input because they cannot make progress in a streaming state machine.
+Head and tail patterns must consume at least one byte. `NewMatcher` rejects fixed or regex patterns that can produce a
+zero-length match in any text context because they cannot make progress in a streaming state machine.
 
 ## References
 

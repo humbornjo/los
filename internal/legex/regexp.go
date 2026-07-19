@@ -78,6 +78,42 @@ func (re *Regexp) Longest() {
 	re.longest = true
 }
 
+// CanMatchEmpty reports whether the expression can match without consuming a
+// rune in any valid text context.
+func (re *Regexp) CanMatchEmpty() bool {
+	contexts := []rune{endOfText, '\n', 'A', '!'}
+	for _, previous := range contexts {
+		for _, next := range contexts {
+			flag := newLazyFlag(previous, next)
+			visited := make([]bool, len(re.prog.Inst))
+			var reachable func(uint32) bool
+			reachable = func(pc uint32) bool {
+				if pc == 0 || visited[pc] {
+					return false
+				}
+				visited[pc] = true
+				inst := &re.prog.Inst[pc]
+				switch inst.Op {
+				case syntax.InstMatch:
+					return true
+				case syntax.InstAlt, syntax.InstAltMatch:
+					return reachable(inst.Out) || reachable(inst.Arg)
+				case syntax.InstCapture, syntax.InstNop:
+					return reachable(inst.Out)
+				case syntax.InstEmptyWidth:
+					return flag.match(syntax.EmptyOp(inst.Arg)) && reachable(inst.Out)
+				default:
+					return false
+				}
+			}
+			if reachable(uint32(re.prog.Start)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 	re, err := syntax.Parse(expr, mode)
 	if err != nil {

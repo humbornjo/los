@@ -1,9 +1,11 @@
 package los
 
 import (
+	"bytes"
 	"slices"
 	"testing"
 
+	"github.com/humbornjo/los/internal/legex"
 	"github.com/stretchr/testify/require"
 )
 
@@ -78,6 +80,8 @@ func TestLos_NewMatcherRejectsEmptyPatterns(t *testing.T) {
 		{name: "empty fixed head", pair: func() *Pair { return NewPair("", "tail") }},
 		{name: "empty regex head", pair: func() *Pair { return NewPair(`a*`, "tail", WithRegexHead(REGEX_MODE_PERL)) }},
 		{name: "empty regex tail", pair: func() *Pair { return NewPair("head", `(?:x?)`, WithRegexTail(REGEX_MODE_PERL)) }},
+		{name: "contextual word boundary", pair: func() *Pair { return NewPair(`\b`, "tail", WithRegexHead(REGEX_MODE_PERL)) }},
+		{name: "contextual optional boundary", pair: func() *Pair { return NewPair(`a??\b`, "tail", WithRegexHead(REGEX_MODE_PERL)) }},
 	}
 
 	for _, tt := range tests {
@@ -85,6 +89,24 @@ func TestLos_NewMatcherRejectsEmptyPatterns(t *testing.T) {
 			require.PanicsWithValue(t, "los: pattern must not match empty input", func() {
 				NewMatcher(tt.pair())
 			})
+		})
+	}
+}
+
+func TestLos_NewMatcherAllowsPatternsWithoutSuccessfulEmptyMatches(t *testing.T) {
+	tests := []struct {
+		name string
+		head string
+	}{
+		{name: "contradictory boundaries", head: `\b\B`},
+		{name: "consuming boundary", head: `a\b`},
+		{name: "ordinary consuming pattern", head: `a+`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matcher := NewMatcher(NewPair(tt.head, "tail", WithRegexHead(REGEX_MODE_PERL)))
+			require.NoError(t, matcher.Close())
 		})
 	}
 }
@@ -159,4 +181,97 @@ func TestLos_MatcherResetOperationsStartNewLogicalStream(t *testing.T) {
 			}, slices.Collect(matcher.Match("abc!")))
 		})
 	}
+}
+
+func TestLos_MatcherPreservesContextAcrossPatternTransitions(t *testing.T) {
+	tests := []struct {
+		name     string
+		pair     *Pair
+		input    string
+		expected []Result
+	}{
+		{
+			name:  "begin anchor applies only once",
+			pair:  NewPair(`^H`, `T`, WithRegexHead(REGEX_MODE_PERL)),
+			input: "HTH",
+			expected: []Result{
+				regexResult{state: STATE_HEAD, raw: []byte("H"), matchcap: []int{0, 1}},
+				textResult{state: STATE_TAIL, raw: []byte("T")},
+				textResult{state: STATE_NONE, raw: []byte("H")},
+			},
+		},
+		{
+			name:  "no word boundary sees preceding head",
+			pair:  NewPair(`x`, `\Bfoo`, WithRegexTail(REGEX_MODE_PERL)),
+			input: "xfoo!",
+			expected: []Result{
+				textResult{state: STATE_HEAD, raw: []byte("x")},
+				regexResult{state: STATE_TAIL, raw: []byte("foo"), matchcap: []int{0, 3}},
+				textResult{state: STATE_NONE, raw: []byte("!")},
+			},
+		},
+		{
+			name:  "line anchor sees preceding newline",
+			pair:  NewPair("head\n", `(?m)^tail`, WithRegexTail(REGEX_MODE_PERL)),
+			input: "head\ntail!",
+			expected: []Result{
+				textResult{state: STATE_HEAD, raw: []byte("head\n")},
+				regexResult{state: STATE_TAIL, raw: []byte("tail"), matchcap: []int{0, 4}},
+				textResult{state: STATE_NONE, raw: []byte("!")},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matcher := NewMatcher(tt.pair)
+			t.Cleanup(func() { require.NoError(t, matcher.Close()) })
+			require.Equal(t, tt.expected, slices.Collect(matcher.Match(tt.input)))
+		})
+	}
+}
+
+func TestLos_MatcherRejectsUnexpectedEmptyResults(t *testing.T) {
+	tests := []struct {
+		name   string
+		result func(*matcher) Results
+	}{
+		{name: "match", result: func(m *matcher) Results { return m.Match("x") }},
+		{name: "finish", result: func(m *matcher) Results {
+			m.buffer.WriteString("x")
+			return m.Finish()
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pat := emptyTestPattern{}
+			matcher := &matcher{
+				buffer:   bytes.NewBuffer(nil),
+				patterns: [2]pattern{pat, pat},
+				context:  legex.NewStreamContext(),
+			}
+			require.PanicsWithValue(t, "los: pattern matched empty input", func() {
+				_ = slices.Collect(tt.result(matcher))
+			})
+		})
+	}
+}
+
+type emptyTestPattern struct{}
+
+func (emptyTestPattern) Match(legex.StreamContext, int, int, []byte) (int, int, bool) {
+	return 0, 0, true
+}
+
+func (emptyTestPattern) Finish(legex.StreamContext, []byte) (int, int, bool) {
+	return 0, 0, true
+}
+
+func (emptyTestPattern) Reset() {}
+
+func (emptyTestPattern) Clear() {}
+
+func (emptyTestPattern) Build(*bytes.Buffer, int, State) Result {
+	panic("unreachable")
 }

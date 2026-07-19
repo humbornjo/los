@@ -23,8 +23,6 @@ type machineDefault struct {
 	matched  bool
 	matchcap []int
 
-	begin    bool
-	previous rune
 	final    bool
 	frontier int
 }
@@ -33,8 +31,6 @@ func (m *machineDefault) Reset() {
 	m.clear(&m.q0)
 	m.clear(&m.q1)
 	m.matched = false
-	m.begin = true
-	m.previous = endOfText
 	for i := range m.matchcap {
 		m.matchcap[i] = -1
 	}
@@ -52,15 +48,15 @@ func (m *machineDefault) MatchCap() []int {
 	return slices.Clone(m.matchcap)
 }
 
-func (m *machineDefault) Match(buf []byte) (int, int, bool) {
-	return m.execute(buf, false)
+func (m *machineDefault) Match(ctx StreamContext, buf []byte) (int, int, bool) {
+	return m.execute(ctx, buf, false)
 }
 
-func (m *machineDefault) Finish(buf []byte) (int, int, bool) {
-	return m.execute(buf, true)
+func (m *machineDefault) Finish(ctx StreamContext, buf []byte) (int, int, bool) {
+	return m.execute(ctx, buf, true)
 }
 
-func (m *machineDefault) execute(buf []byte, final bool) (int, int, bool) {
+func (m *machineDefault) execute(ctx StreamContext, buf []byte, final bool) (int, int, bool) {
 	limit := 0
 	for limit < len(buf) && (final || utf8.FullRune(buf[limit:])) {
 		_, width := utf8.DecodeRune(buf[limit:])
@@ -76,7 +72,7 @@ func (m *machineDefault) execute(buf []byte, final bool) (int, int, bool) {
 	m.final = final
 	m.frontier = math.MaxInt
 
-	m.match(&inputBytes{str: buf[:limit]})
+	m.match(ctx, &inputBytes{str: buf[:limit]})
 	if m.matched {
 		return m.matchcap[0], m.matchcap[1] - m.matchcap[0], true
 	}
@@ -84,17 +80,13 @@ func (m *machineDefault) execute(buf []byte, final bool) (int, int, bool) {
 	if final || m.frontier == math.MaxInt {
 		m.frontier = limit
 	}
-	if m.frontier > 0 {
-		m.previous, _ = utf8.DecodeLastRune(buf[:m.frontier])
-		m.begin = false
-	}
 	return m.frontier, len(buf) - m.frontier, false
 }
 
 // match follows the standard library's ordered NFA execution. At the current
 // end of available input it also records the earliest live thread, which is
 // the first byte that must remain buffered for the next stream chunk.
-func (m *machineDefault) match(i *inputBytes) {
+func (m *machineDefault) match(ctx StreamContext, i *inputBytes) {
 	startCond := m.re.cond
 	if startCond == ^syntax.EmptyOp(0) {
 		return
@@ -117,14 +109,14 @@ func (m *machineDefault) match(i *inputBytes) {
 	} else {
 		r = boundary
 	}
-	flag := newLazyFlag(m.previous, r)
-	if m.begin {
+	flag := newLazyFlag(ctx.previous, r)
+	if ctx.begin {
 		flag = newLazyFlag(endOfText, r)
 	}
 
 	for {
 		if len(runq.dense) == 0 {
-			if startCond&syntax.EmptyBeginText != 0 && (!m.begin || pos != 0) {
+			if startCond&syntax.EmptyBeginText != 0 && (!ctx.begin || pos != 0) {
 				break
 			}
 			if m.matched {
@@ -294,9 +286,16 @@ again:
 		op := syntax.EmptyOp(inst.Arg)
 		if !m.final && rune(*cond) == endOfChunk &&
 			op&(syntax.EmptyEndLine|syntax.EmptyEndText|syntax.EmptyWordBoundary|syntax.EmptyNoWordBoundary) != 0 {
-			if len(cap) > 0 {
-				m.frontier = min(m.frontier, cap[0])
+			if t == nil {
+				t = m.alloc(inst)
+			} else {
+				t.inst = inst
 			}
+			if len(cap) > 0 && &t.cap[0] != &cap[0] {
+				copy(t.cap, cap)
+			}
+			entry.t = t
+			t = nil
 		} else if cond.match(op) {
 			pc = inst.Out
 			goto again

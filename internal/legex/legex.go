@@ -1,7 +1,10 @@
 // Package legex derived from `regexp`
 package legex
 
-import "sync"
+import (
+	"sync"
+	"unicode/utf8"
+)
 
 // Pools of *machineDefault for use when calling (*Regexp).Get,
 // split up by the size of the execution queues. defaultPool[i]
@@ -16,7 +19,7 @@ var (
 )
 
 type Machine interface {
-	// Reset starts a new logical stream with the same regular expression.
+	// Reset clears the current match state without changing stream context.
 	Reset()
 	// Close returns the machine resources to the pool.
 	Close()
@@ -25,9 +28,30 @@ type Machine interface {
 	// Match searches the retained stream buffer. When no match is complete,
 	// index is the number of bytes safe to release and length is the number
 	// of bytes that must remain buffered.
-	Match(buf []byte) (index int, length int, ok bool)
+	Match(ctx StreamContext, buf []byte) (index int, length int, ok bool)
 	// Finish performs the final search with a real end-of-text boundary.
-	Finish(buf []byte) (index int, length int, ok bool)
+	Finish(ctx StreamContext, buf []byte) (index int, length int, ok bool)
+}
+
+// StreamContext describes the text immediately before a retained stream
+// buffer. Its fields are intentionally private so callers advance it only
+// through consumed bytes.
+type StreamContext struct {
+	begin    bool
+	previous rune
+}
+
+func NewStreamContext() StreamContext {
+	return StreamContext{begin: true, previous: endOfText}
+}
+
+func (ctx StreamContext) Advance(consumed []byte) StreamContext {
+	if len(consumed) == 0 {
+		return ctx
+	}
+	ctx.begin = false
+	ctx.previous, _ = utf8.DecodeLastRune(consumed)
+	return ctx
 }
 
 func (re *Regexp) Get() Machine {

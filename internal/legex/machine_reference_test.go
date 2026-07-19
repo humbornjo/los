@@ -52,7 +52,7 @@ func TestLegex_MachineMatchesRegexp(t *testing.T) {
 			machine := re.Get()
 			t.Cleanup(machine.Close)
 
-			index, length, ok := machine.Finish([]byte(tt.input))
+			index, length, ok := machine.Finish(legex.NewStreamContext(), []byte(tt.input))
 			if standard == nil {
 				require.False(t, ok)
 				return
@@ -85,7 +85,7 @@ func TestLegex_PosixMachineMatchesRegexp(t *testing.T) {
 			machine := re.Get()
 			t.Cleanup(machine.Close)
 
-			index, length, ok := machine.Finish([]byte(tt.input))
+			index, length, ok := machine.Finish(legex.NewStreamContext(), []byte(tt.input))
 			require.True(t, ok)
 			require.Equal(t, standard[0], index)
 			require.Equal(t, standard[1]-standard[0], length)
@@ -103,9 +103,36 @@ func TestLegex_LongestMachineMatchesRegexp(t *testing.T) {
 	machine := re.Get()
 	t.Cleanup(machine.Close)
 
-	_, _, ok := machine.Finish([]byte("ab"))
+	_, _, ok := machine.Finish(legex.NewStreamContext(), []byte("ab"))
 	require.True(t, ok)
 	require.Equal(t, standard.FindStringSubmatchIndex("ab"), machine.MatchCap())
+}
+
+func TestLegex_RegexpCanMatchEmpty(t *testing.T) {
+	tests := []struct {
+		name     string
+		expr     string
+		expected bool
+	}{
+		{name: "empty expression", expr: ``, expected: true},
+		{name: "empty repetition", expr: `a*`, expected: true},
+		{name: "word boundary", expr: `\b`, expected: true},
+		{name: "no word boundary", expr: `\B`, expected: true},
+		{name: "contextual optional boundary", expr: `a??\b`, expected: true},
+		{name: "begin anchor", expr: `^`, expected: true},
+		{name: "empty line", expr: `(?m:^$)`, expected: true},
+		{name: "contradictory boundaries", expr: `\b\B`},
+		{name: "consuming boundary", expr: `a\b`},
+		{name: "consuming repetition", expr: `a+`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re, err := legex.Compile(tt.expr)
+			require.NoError(t, err)
+			require.Equal(t, tt.expected, re.CanMatchEmpty())
+		})
+	}
 }
 
 func TestLegex_MachineResumesAcrossChunks(t *testing.T) {
@@ -195,16 +222,20 @@ func TestLegex_MachineResumesAcrossChunks(t *testing.T) {
 			require.NoError(t, err)
 			machine := re.Get()
 			t.Cleanup(machine.Close)
+			ctx := legex.NewStreamContext()
 
 			var input []byte
 			for i, chunk := range tt.chunks {
 				input = append(input, chunk...)
-				index, length, ok := machine.Match(input)
+				index, length, ok := machine.Match(ctx, input)
 				require.Equal(t, tt.expected[i], streamResult{index: index, length: length, ok: ok})
+				if !ok {
+					ctx = ctx.Advance(input[:index])
+				}
 				input = input[index:]
 			}
 			if tt.finish != nil {
-				index, length, ok := machine.Finish(input)
+				index, length, ok := machine.Finish(ctx, input)
 				require.Equal(t, *tt.finish, streamResult{index: index, length: length, ok: ok})
 			}
 			if tt.matchcap != nil {
@@ -243,22 +274,24 @@ func TestLegex_MachineMatchesAcrossEveryByteBoundary(t *testing.T) {
 			require.NoError(t, err)
 			machine := re.Get()
 			t.Cleanup(machine.Close)
+			ctx := legex.NewStreamContext()
 
 			var retained []byte
 			released := 0
 			matched := false
 			for _, b := range []byte(tt.input) {
 				retained = append(retained, b)
-				index, _, ok := machine.Match(retained)
+				index, _, ok := machine.Match(ctx, retained)
 				if ok {
 					matched = true
 					break
 				}
+				ctx = ctx.Advance(retained[:index])
 				retained = retained[index:]
 				released += index
 			}
 			if !matched {
-				_, _, matched = machine.Finish(retained)
+				_, _, matched = machine.Finish(ctx, retained)
 			}
 			require.True(t, matched)
 
@@ -292,15 +325,17 @@ func TestLegex_MachineDefersBoundaryDependentMatches(t *testing.T) {
 			require.NoError(t, err)
 			machine := re.Get()
 			t.Cleanup(machine.Close)
+			ctx := legex.NewStreamContext()
 
 			var retained []byte
 			for _, chunk := range tt.chunks {
 				retained = append(retained, chunk...)
-				index, _, ok := machine.Match(retained)
+				index, _, ok := machine.Match(ctx, retained)
 				require.False(t, ok)
+				ctx = ctx.Advance(retained[:index])
 				retained = retained[index:]
 			}
-			index, length, ok := machine.Finish(retained)
+			index, length, ok := machine.Finish(ctx, retained)
 			require.Equal(t, tt.final, streamResult{index: index, length: length, ok: ok})
 		})
 	}
