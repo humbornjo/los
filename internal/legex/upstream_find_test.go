@@ -6,7 +6,6 @@ package legex_test
 
 import (
 	"regexp"
-	"slices"
 	"testing"
 	"unicode/utf8"
 
@@ -14,13 +13,44 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// upstreamFindTests mirrors every pattern and input in Go's regexp/find_test.go.
-// The expected indices come from the public regexp implementation; LOS runs
-// each search one byte at a time and preserves context between searches.
-var upstreamFindTests = []struct {
-	expr  string
-	input string
-}{
+type upstreamMatchBlock struct {
+	block    string
+	captures []string
+}
+
+type upstreamStreamCase struct {
+	pattern  string
+	input    string
+	expected []upstreamMatchBlock
+}
+
+type upstreamPatternInput struct {
+	pattern string
+	input   string
+}
+
+func newUpstreamStreamCase(pattern, input string) upstreamStreamCase {
+	standard := regexp.MustCompile(pattern)
+	return upstreamStreamCase{
+		pattern:  pattern,
+		input:    input,
+		expected: upstreamMatchBlocks(input, standard.FindAllStringSubmatchIndex(input, -1)),
+	}
+}
+
+func newUpstreamStreamCases(cases []upstreamPatternInput) []upstreamStreamCase {
+	streamCases := make([]upstreamStreamCase, 0, len(cases))
+	for _, tt := range cases {
+		streamCases = append(streamCases, newUpstreamStreamCase(tt.pattern, tt.input))
+	}
+	return streamCases
+}
+
+// _UPSTREAM_FIND_TESTS mirrors every pattern and input in Go's regexp/find_test.go.
+// Expected match blocks and capture strings come from the public regexp
+// implementation; LOS runs each search one byte at a time and preserves
+// context between searches.
+var _UPSTREAM_FIND_TESTS = newUpstreamStreamCases([]upstreamPatternInput{
 	{``, ``},
 	{`^abcdefg`, "abcdefg"},
 	{`a+`, "baaab"},
@@ -108,18 +138,54 @@ var upstreamFindTests = []struct {
 	{"[\ufffd]", "\xff"},
 	{`[\x{fffd}]`, "\xc2\x00"},
 	{`.`, "qwertyuiopasdfghjklzxcvbnm1234567890"},
-}
+})
 
 func TestLegex_UpstreamFindCasesStreaming(t *testing.T) {
-	for i, tt := range upstreamFindTests {
-		standard := regexp.MustCompile(tt.expr)
-		re, err := legex.Compile(tt.expr)
-		require.NoError(t, err, "case=%d expr=%q", i, tt.expr)
-		expected := standard.FindAllStringSubmatchIndex(tt.input, -1)
-		actual := streamAllSubmatchIndices(re, tt.input)
-		require.True(t, slices.EqualFunc(expected, actual, slices.Equal),
-			"case=%d expr=%q input=%q\nexpected=%v\nactual=%v", i, tt.expr, tt.input, expected, actual)
+	for i, tt := range _UPSTREAM_FIND_TESTS {
+		assertUpstreamStreamCase(t, i, tt)
 	}
+}
+
+func assertUpstreamStreamCase(t *testing.T, index int, tt upstreamStreamCase) {
+	t.Helper()
+	re, err := legex.Compile(tt.pattern)
+	require.NoError(t, err, "case=%d pattern=%q", index, tt.pattern)
+	require.Equal(t, tt.expected, streamAllMatchBlocks(re, tt.input),
+		"case=%d pattern=%q input=%q", index, tt.pattern, tt.input)
+}
+
+func streamAllMatchBlocks(re *legex.Regexp, input string) []upstreamMatchBlock {
+	return upstreamMatchBlocks(input, streamAllSubmatchIndices(re, input))
+}
+
+func streamFirstMatchBlocks(re *legex.Regexp, input string) []upstreamMatchBlock {
+	return upstreamSingleMatchBlocks(input, streamFirstSubmatchIndex(re, input, 0))
+}
+
+func upstreamSingleMatchBlocks(input string, match []int) []upstreamMatchBlock {
+	if match == nil {
+		return nil
+	}
+	return upstreamMatchBlocks(input, [][]int{match})
+}
+
+func upstreamMatchBlocks(input string, matches [][]int) []upstreamMatchBlock {
+	if matches == nil {
+		return nil
+	}
+	blocks := make([]upstreamMatchBlock, 0, len(matches))
+	for _, match := range matches {
+		block := upstreamMatchBlock{block: input[match[0]:match[1]]}
+		for i := 2; i < len(match); i += 2 {
+			capture := ""
+			if match[i] >= 0 && match[i+1] >= 0 {
+				capture = input[match[i]:match[i+1]]
+			}
+			block.captures = append(block.captures, capture)
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
 }
 
 func streamAllSubmatchIndices(re *legex.Regexp, input string) [][]int {

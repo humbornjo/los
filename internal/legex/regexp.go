@@ -3,6 +3,7 @@ package legex
 import (
 	"regexp/syntax"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -139,6 +140,9 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 		matchcap:    matchcap,
 	}
 	regexp.prefix, regexp.prefixComplete = prog.Prefix()
+	if regexp.prefix == "" && !regexp.prefixComplete {
+		regexp.prefix, regexp.prefixComplete = anchoredLiteralPrefix(prog)
+	}
 
 	n := len(prog.Inst)
 	i := 0
@@ -148,6 +152,64 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 	regexp.mpool = i
 
 	return regexp, nil
+}
+
+// anchoredLiteralPrefix handles the leading begin-text assertion that
+// syntax.Prog.Prefix intentionally treats as the end of a literal prefix.
+// The prefix is metadata only; the ordered NFA remains the execution engine.
+func anchoredLiteralPrefix(prog *syntax.Prog) (string, bool) {
+	inst := &prog.Inst[prog.Start]
+	if inst.Op != syntax.InstEmptyWidth || syntax.EmptyOp(inst.Arg)&syntax.EmptyBeginText == 0 {
+		return "", false
+	}
+
+	inst = &prog.Inst[inst.Out]
+	for inst.Op == syntax.InstNop {
+		inst = &prog.Inst[inst.Out]
+	}
+	if !isLiteralRune(inst) {
+		return "", false
+	}
+
+	var prefix strings.Builder
+	for isLiteralRune(inst) {
+		prefix.WriteRune(inst.Rune[0])
+		inst = &prog.Inst[inst.Out]
+	}
+	if inst.Op == syntax.InstEmptyWidth &&
+		syntax.EmptyOp(inst.Arg)&syntax.EmptyEndText != 0 &&
+		prog.Inst[inst.Out].Op == syntax.InstMatch {
+		return prefix.String(), true
+	}
+	if inst.Op == syntax.InstEmptyWidth &&
+		syntax.EmptyOp(inst.Arg)&syntax.EmptyBeginText != 0 &&
+		!hasConsumingPath(prog, inst.Out, make([]bool, len(prog.Inst))) {
+		return "", false
+	}
+	return prefix.String(), false
+}
+
+func isLiteralRune(inst *syntax.Inst) bool {
+	return (inst.Op == syntax.InstRune || inst.Op == syntax.InstRune1) &&
+		len(inst.Rune) == 1 && syntax.Flags(inst.Arg)&syntax.FoldCase == 0 && inst.Rune[0] != utf8.RuneError
+}
+
+func hasConsumingPath(prog *syntax.Prog, pc uint32, visited []bool) bool {
+	if pc == 0 || visited[pc] {
+		return false
+	}
+	visited[pc] = true
+	inst := &prog.Inst[pc]
+	switch inst.Op {
+	case syntax.InstRune, syntax.InstRune1, syntax.InstRuneAny, syntax.InstRuneAnyNotNL:
+		return true
+	case syntax.InstAlt, syntax.InstAltMatch:
+		return hasConsumingPath(prog, inst.Out, visited) || hasConsumingPath(prog, inst.Arg, visited)
+	case syntax.InstCapture, syntax.InstEmptyWidth, syntax.InstNop:
+		return hasConsumingPath(prog, inst.Out, visited)
+	default:
+		return false
+	}
 }
 
 // MustCompile is like [Compile] but panics if the expression cannot be parsed.
