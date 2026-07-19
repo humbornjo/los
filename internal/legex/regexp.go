@@ -92,7 +92,7 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 		return nil, err
 	}
 
-	matchcap := max(prog.NumCap, 2)
+	matchcap := 2 * (maxCap + 1)
 	regexp := &Regexp{
 		expr:        expr,
 		prog:        prog,

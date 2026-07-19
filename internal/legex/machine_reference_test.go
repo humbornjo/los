@@ -29,6 +29,18 @@ func TestLegex_MachineMatchesRegexp(t *testing.T) {
 		{name: "case folding", expr: `(?i:hello)`, input: "say HeLLo"},
 		{name: "dot newline", expr: `(?s:a.*z)`, input: "a\n\nz"},
 		{name: "empty match", expr: `a*`, input: "bbb"},
+		{name: "nested empty capture", expr: `a*(|(b))c*`, input: "aacc"},
+		{name: "adjacent greedy repetitions", expr: `(.*).*`, input: "ab"},
+		{name: "repeated nested captures", expr: `((a|b|c)*(d))`, input: "abcd"},
+		{name: "nested alternative priority", expr: `(?:A(?:A|a))`, input: "Aa"},
+		{name: "empty alternative repetition", expr: `(|a)*`, input: "aa"},
+		{name: "empty counted capture", expr: `(a){0}`, input: "x"},
+		{name: "begin line excludes newline", expr: `(?-s)(?:(?:^).)`, input: "\n"},
+		{name: "begin line with dot newline", expr: `(?s)(?:(?:^).)`, input: "\n"},
+		{name: "ascii controls", expr: `\a\f\n\r\t\v`, input: "\a\f\n\r\t\v"},
+		{name: "escaped punctuation", expr: `[\!\"\#\$\%\&\'\(\)\*\+\,\-\.\/\:\;\<\=\>\?\@\[\\\]\^\_\{\|\}\~]+`, input: `!"#$%&'()*+,-./:;<=>?@[\]^_{|}~`},
+		{name: "invalid utf8 rune", expr: `\x{FFFD}`, input: string([]byte{0xff})},
+		{name: "invalid utf8 sequence", expr: `\x{FFFD}`, input: string([]byte{0xc2, 0x00})},
 		{name: "no match", expr: `xyz`, input: "abc"},
 	}
 

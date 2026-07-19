@@ -31,7 +31,7 @@ type Machine interface {
 }
 
 func (re *Regexp) Get() Machine {
-	numCap := re.prog.NumCap
+	numCap := re.matchcap
 
 	// Use Default Machine
 	m, ok := defaultPool[re.mpool].Get().(*machineDefault)
