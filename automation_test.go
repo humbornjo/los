@@ -9,12 +9,12 @@ import (
 )
 
 func TestLos_AutomationMatcherSelectsPairsAndValues(t *testing.T) {
-	first := NewPair("<a>", "</a>").WithValue("a")
-	second := NewPair("<b>", "</b>").WithValue("b")
+	first := NewPair("<a>", "</a>", WithValue("a"))
+	second := NewPair("<b>", "</b>", WithValue("b"))
 	matcher := NewMatcher(first, second)
 	t.Cleanup(func() { require.NoError(t, matcher.Close()) })
-	first.WithValue("changed")
-	second.WithValue("changed")
+	first.value = "changed"
+	second.value = "changed"
 
 	requireMatcherResults(t, []resultExpectation{
 		{state: STATE_NONE, text: "pre", matches: []string{"pre"}},
@@ -31,10 +31,10 @@ func TestLos_AutomationMatcherSelectsPairsAndValues(t *testing.T) {
 }
 
 func TestLos_MatcherSnapshotsSinglePairValue(t *testing.T) {
-	pair := NewPair("HEAD", "TAIL").WithValue("original")
+	pair := NewPair("HEAD", "TAIL", WithValue("original"))
 	matcher := NewMatcher(pair)
 	t.Cleanup(func() { require.NoError(t, matcher.Close()) })
-	pair.WithValue("changed")
+	pair.value = "changed"
 
 	requireMatcherResults(t, []resultExpectation{
 		{state: STATE_NONE, text: "pre", matches: []string{"pre"}},
@@ -55,8 +55,8 @@ func TestLos_AutomationMatcherPreservesOrderedHeadPriority(t *testing.T) {
 		{
 			name: "higher priority longer literal waits",
 			pairs: []*Pair{
-				NewPair("foobar", "!").WithValue("long"),
-				NewPair("foo", "?").WithValue("short"),
+				NewPair("foobar", "!", WithValue("long")),
+				NewPair("foo", "?", WithValue("short")),
 			},
 			chunks: []string{"xfoo", "bar!"},
 			expected: [][]resultExpectation{
@@ -70,8 +70,8 @@ func TestLos_AutomationMatcherPreservesOrderedHeadPriority(t *testing.T) {
 		{
 			name: "higher priority shorter literal wins immediately",
 			pairs: []*Pair{
-				NewPair("foo", "?").WithValue("short"),
-				NewPair("foobar", "!").WithValue("long"),
+				NewPair("foo", "?", WithValue("short")),
+				NewPair("foobar", "!", WithValue("long")),
 			},
 			chunks: []string{"xfoobar?"},
 			expected: [][]resultExpectation{{
@@ -84,8 +84,8 @@ func TestLos_AutomationMatcherPreservesOrderedHeadPriority(t *testing.T) {
 		{
 			name: "earlier start beats registration order",
 			pairs: []*Pair{
-				NewPair("bar", "?").WithValue("bar"),
-				NewPair("foo", "!").WithValue("foo"),
+				NewPair("bar", "?", WithValue("bar")),
+				NewPair("foo", "!", WithValue("foo")),
 			},
 			chunks: []string{"foobar!"},
 			expected: [][]resultExpectation{{
@@ -97,8 +97,8 @@ func TestLos_AutomationMatcherPreservesOrderedHeadPriority(t *testing.T) {
 		{
 			name: "duplicate head uses first pair",
 			pairs: []*Pair{
-				NewPair("tag", "A").WithValue("first"),
-				NewPair("tag", "B").WithValue("second"),
+				NewPair("tag", "A", WithValue("first")),
+				NewPair("tag", "B", WithValue("second")),
 			},
 			chunks: []string{"tagA"},
 			expected: [][]resultExpectation{{
@@ -109,9 +109,9 @@ func TestLos_AutomationMatcherPreservesOrderedHeadPriority(t *testing.T) {
 		{
 			name: "failure link output keeps earliest start",
 			pairs: []*Pair{
-				NewPair("hers", "X").WithValue("hers"),
-				NewPair("she", "!").WithValue("she"),
-				NewPair("he", "?").WithValue("he"),
+				NewPair("hers", "X", WithValue("hers")),
+				NewPair("she", "!", WithValue("she")),
+				NewPair("he", "?", WithValue("he")),
 			},
 			chunks: []string{"usher!"},
 			expected: [][]resultExpectation{{
@@ -145,8 +145,8 @@ func TestLos_AutomationMatcherMergesFixedAndRegexHeads(t *testing.T) {
 		{
 			name: "pending higher priority perl head blocks fixed head",
 			pairs: []*Pair{
-				NewPair(`foo(bar)?`, `!`, WithRegexHead(REGEX_MODE_PERL)).WithValue("regex"),
-				NewPair("foo", "?").WithValue("fixed"),
+				NewPair(`foo(bar)?`, `!`, WithRegexHead(REGEX_MODE_PERL), WithValue("regex")),
+				NewPair("foo", "?", WithValue("fixed")),
 			},
 			chunks: []string{"foo", "bar!"},
 			expected: [][]resultExpectation{
@@ -160,8 +160,8 @@ func TestLos_AutomationMatcherMergesFixedAndRegexHeads(t *testing.T) {
 		{
 			name: "failed higher priority boundary releases fixed head",
 			pairs: []*Pair{
-				NewPair(`foo\b`, `?`, WithRegexHead(REGEX_MODE_PERL)).WithValue("regex"),
-				NewPair("foo", "!").WithValue("fixed"),
+				NewPair(`foo\b`, `?`, WithRegexHead(REGEX_MODE_PERL), WithValue("regex")),
+				NewPair("foo", "!", WithValue("fixed")),
 			},
 			chunks: []string{"foo", "x!"},
 			expected: [][]resultExpectation{
@@ -176,8 +176,8 @@ func TestLos_AutomationMatcherMergesFixedAndRegexHeads(t *testing.T) {
 		{
 			name: "higher priority fixed head beats pending regex",
 			pairs: []*Pair{
-				NewPair("foo", "?").WithValue("fixed"),
-				NewPair(`foo(bar)?`, `!`, WithRegexHead(REGEX_MODE_PERL)).WithValue("regex"),
+				NewPair("foo", "?", WithValue("fixed")),
+				NewPair(`foo(bar)?`, `!`, WithRegexHead(REGEX_MODE_PERL), WithValue("regex")),
 			},
 			chunks: []string{"foobar?"},
 			expected: [][]resultExpectation{{
@@ -189,8 +189,8 @@ func TestLos_AutomationMatcherMergesFixedAndRegexHeads(t *testing.T) {
 		{
 			name: "posix head keeps longest semantics and captures",
 			pairs: []*Pair{
-				NewPair(`(a|aa)+`, `!`, WithRegexHead(REGEX_MODE_POSIX)).WithValue("posix"),
-				NewPair("aa", "?").WithValue("fixed"),
+				NewPair(`(a|aa)+`, `!`, WithRegexHead(REGEX_MODE_POSIX), WithValue("posix")),
+				NewPair("aa", "?", WithValue("fixed")),
 			},
 			chunks: []string{"aa", "a!"},
 			expected: [][]resultExpectation{
@@ -217,17 +217,19 @@ func TestLos_AutomationMatcherMergesFixedAndRegexHeads(t *testing.T) {
 
 func TestLos_AutomationMatcherSupportsMixedHeadAndTailModes(t *testing.T) {
 	matcher := NewMatcher(
-		NewPair("<fixed>", "</fixed>").WithValue("fixed"),
+		NewPair("<fixed>", "</fixed>", WithValue("fixed")),
 		NewPair(
 			`P([0-9]+)`, `(a|aa)`,
 			WithRegexHead(REGEX_MODE_PERL),
 			WithRegexTail(REGEX_MODE_POSIX),
-		).WithValue("perl"),
+			WithValue("perl"),
+		),
 		NewPair(
 			`(x|xx)`, `!+`,
 			WithRegexHead(REGEX_MODE_POSIX),
 			WithRegexTail(REGEX_MODE_PERL),
-		).WithValue("posix"),
+			WithValue("posix"),
+		),
 	)
 	t.Cleanup(func() { require.NoError(t, matcher.Close()) })
 
@@ -248,8 +250,8 @@ func TestLos_AutomationMatcherSupportsMixedHeadAndTailModes(t *testing.T) {
 
 func TestLos_AutomationMatcherResolvesPendingHeadsAtFinish(t *testing.T) {
 	matcher := NewMatcher(
-		NewPair("foobar", "?").WithValue("fixed"),
-		NewPair(`foo`, `!`, WithRegexHead(REGEX_MODE_PERL)).WithValue("regex"),
+		NewPair("foobar", "?", WithValue("fixed")),
+		NewPair(`foo`, `!`, WithRegexHead(REGEX_MODE_PERL), WithValue("regex")),
 	)
 	t.Cleanup(func() { require.NoError(t, matcher.Close()) })
 
@@ -269,8 +271,8 @@ func TestLos_AutomationMatcherPreservesLogicalStreamContext(t *testing.T) {
 		{
 			name: "begin anchor applies only once",
 			pairs: []*Pair{
-				NewPair(`^H`, `T`, WithRegexHead(REGEX_MODE_PERL)).WithValue("anchored"),
-				NewPair("unused", "!").WithValue("unused"),
+				NewPair(`^H`, `T`, WithRegexHead(REGEX_MODE_PERL), WithValue("anchored")),
+				NewPair("unused", "!", WithValue("unused")),
 			},
 			chunks: []string{"H", "TH"},
 			expected: []resultExpectation{
@@ -282,8 +284,8 @@ func TestLos_AutomationMatcherPreservesLogicalStreamContext(t *testing.T) {
 		{
 			name: "regex tail sees fixed head preceding rune",
 			pairs: []*Pair{
-				NewPair("x", `\Bfoo`, WithRegexTail(REGEX_MODE_PERL)).WithValue("selected"),
-				NewPair("unused", "!").WithValue("unused"),
+				NewPair("x", `\Bfoo`, WithRegexTail(REGEX_MODE_PERL), WithValue("selected")),
+				NewPair("unused", "!", WithValue("unused")),
 			},
 			chunks: []string{"xfo", "o!"},
 			expected: []resultExpectation{
@@ -295,8 +297,8 @@ func TestLos_AutomationMatcherPreservesLogicalStreamContext(t *testing.T) {
 		{
 			name: "next regex head sees newline consumed by prior pair",
 			pairs: []*Pair{
-				NewPair("A", "\n").WithValue("first"),
-				NewPair(`(?m)^B`, `!`, WithRegexHead(REGEX_MODE_PERL)).WithValue("second"),
+				NewPair("A", "\n", WithValue("first")),
+				NewPair(`(?m)^B`, `!`, WithRegexHead(REGEX_MODE_PERL), WithValue("second")),
 			},
 			chunks: []string{"A\n", "B!"},
 			expected: []resultExpectation{
@@ -325,8 +327,8 @@ func TestLos_AutomationMatcherPreservesLogicalStreamContext(t *testing.T) {
 func TestLos_AutomationMatcherHandlesInvalidUtf8AcrossChunks(t *testing.T) {
 	invalid := string([]byte{0xc2})
 	matcher := NewMatcher(
-		NewPair("unused", "?").WithValue("fixed"),
-		NewPair(`(\x{FFFD})x`, `!`, WithRegexHead(REGEX_MODE_PERL)).WithValue("regex"),
+		NewPair("unused", "?", WithValue("fixed")),
+		NewPair(`(\x{FFFD})x`, `!`, WithRegexHead(REGEX_MODE_PERL), WithValue("regex")),
 	)
 	t.Cleanup(func() { require.NoError(t, matcher.Close()) })
 
@@ -348,8 +350,8 @@ func TestLos_AutomationMatcherMatchesAcrossEveryByteBoundary(t *testing.T) {
 			name: "longer registered literal",
 			pairs: func() []*Pair {
 				return []*Pair{
-					NewPair("foobar", "!").WithValue("long"),
-					NewPair("foo", "?").WithValue("short"),
+					NewPair("foobar", "!", WithValue("long")),
+					NewPair("foo", "?", WithValue("short")),
 				}
 			},
 			input: "foobar!",
@@ -362,9 +364,9 @@ func TestLos_AutomationMatcherMatchesAcrossEveryByteBoundary(t *testing.T) {
 			name: "failure link candidate",
 			pairs: func() []*Pair {
 				return []*Pair{
-					NewPair("hers", "?").WithValue("hers"),
-					NewPair("she", "!").WithValue("she"),
-					NewPair("he", "X").WithValue("he"),
+					NewPair("hers", "?", WithValue("hers")),
+					NewPair("she", "!", WithValue("she")),
+					NewPair("he", "X", WithValue("he")),
 				}
 			},
 			input: "usher!",
@@ -379,8 +381,8 @@ func TestLos_AutomationMatcherMatchesAcrossEveryByteBoundary(t *testing.T) {
 			name: "regex and fixed overlap",
 			pairs: func() []*Pair {
 				return []*Pair{
-					NewPair(`foo(bar)?`, `!`, WithRegexHead(REGEX_MODE_PERL)).WithValue("regex"),
-					NewPair("foo", "?").WithValue("fixed"),
+					NewPair(`foo(bar)?`, `!`, WithRegexHead(REGEX_MODE_PERL), WithValue("regex")),
+					NewPair("foo", "?", WithValue("fixed")),
 				}
 			},
 			input: "foobar!",
@@ -422,8 +424,8 @@ func TestLos_AutomationMatcherMatchesAcrossEveryByteBoundary(t *testing.T) {
 
 func TestLos_AutomationMatcherFinishDrainAndReset(t *testing.T) {
 	matcher := NewMatcher(
-		NewPair(`^BEGIN`, `([a-z]+)\z`, WithRegexHead(REGEX_MODE_PERL), WithRegexTail(REGEX_MODE_PERL)).WithValue("anchored"),
-		NewPair("ALT", "!").WithValue("alt"),
+		NewPair(`^BEGIN`, `([a-z]+)\z`, WithRegexHead(REGEX_MODE_PERL), WithRegexTail(REGEX_MODE_PERL), WithValue("anchored")),
+		NewPair("ALT", "!", WithValue("alt")),
 	)
 	t.Cleanup(func() { require.NoError(t, matcher.Close()) })
 
@@ -484,8 +486,8 @@ func TestLos_AutomationMatcherLongPartitionedStream(t *testing.T) {
 	require.Greater(t, len(strings.Fields(input)), 1024)
 
 	matcher := NewMatcher(
-		NewPair("<fixed>", "</fixed>").WithValue("fixed"),
-		NewPair(`<([a-z]+) id=([0-9]+)>`, `</([a-z]+)>`, WithRegexHead(REGEX_MODE_PERL), WithRegexTail(REGEX_MODE_PERL)).WithValue("regex"),
+		NewPair("<fixed>", "</fixed>", WithValue("fixed")),
+		NewPair(`<([a-z]+) id=([0-9]+)>`, `</([a-z]+)>`, WithRegexHead(REGEX_MODE_PERL), WithRegexTail(REGEX_MODE_PERL), WithValue("regex")),
 	)
 	t.Cleanup(func() { require.NoError(t, matcher.Close()) })
 

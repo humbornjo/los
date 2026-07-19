@@ -70,7 +70,8 @@ matcher := los.NewMatcher(
     "ab(.*?)c",
     "xyz",
     los.WithRegexHead(los.REGEX_MODE_PERL),
-  ).WithValue("block"),
+    los.WithValue("block"),
+  ),
 )
 defer matcher.Close()
 
@@ -106,10 +107,11 @@ Pass more than one pair to scan several possible heads in the same stream:
 
 ```go
 matcher := los.NewMatcher(
-  los.NewPair("<think>", "</think>").WithValue("think"),
+  los.NewPair("<think>", "</think>", los.WithValue("think")),
   los.NewPair(`<tool name="([^"]+)">`, "</tool>",
     los.WithRegexHead(los.REGEX_MODE_PERL),
-  ).WithValue("tool"),
+    los.WithValue("tool"),
+  ),
 )
 ```
 

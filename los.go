@@ -62,18 +62,20 @@ func WithRegexTail(mode ...regexMode) pairOption {
 	}
 }
 
+// WithValue labels results produced while this pair is active.
+func WithValue(value any) pairOption {
+	return func(pair *Pair) *Pair {
+		pair.value = value
+		return pair
+	}
+}
+
 func NewPair(head, tail string, opts ...pairOption) *Pair {
 	pair := &Pair{head: head, tail: tail}
 	for _, opt := range opts {
 		pair = opt(pair)
 	}
 	return pair
-}
-
-// WithValue labels results produced while this pair is active.
-func (p *Pair) WithValue(value any) *Pair {
-	p.value = value
-	return p
 }
 
 // NewMatcher builds a streaming matcher. Multiple pairs are selected by the
