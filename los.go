@@ -93,6 +93,9 @@ type Matcher interface {
 	// Match takes a string as input and return a sequence of
 	// Result against the input. There could be 0 or more Result.
 	Match(string) Results
+	// Finish resolves end-of-text assertions and returns the final results.
+	// It resets the matcher so it can process a new logical stream.
+	Finish() Results
 
 	// Close must be called for each matcher. It act as nop for
 	// kmpPattern. For regexPattern, however, Close will restore
@@ -175,7 +178,11 @@ func (r regexResult) Matches() iter.Seq[string] {
 	return func(yield func(string) bool) {
 		for i := 0; i < len(r.matchcap); i += 2 {
 			s, e := r.matchcap[i], r.matchcap[i+1]
-			if !yield(string(r.raw[s:e])) {
+			match := ""
+			if s >= 0 && e >= 0 {
+				match = string(r.raw[s:e])
+			}
+			if !yield(match) {
 				return
 			}
 		}
@@ -197,6 +204,9 @@ type matcher struct {
 func (m *matcher) Drain() string {
 	defer m.buffer.Reset()
 	m.index, m.offset, m.state = 0, 0, STATE_NONE
+	for _, pattern := range m.patterns {
+		pattern.Reset()
+	}
 	return m.buffer.String()
 }
 
@@ -229,6 +239,34 @@ func (m *matcher) Match(s string) Results {
 	}
 }
 
+func (m *matcher) Finish() Results {
+	return func(yield func(Result) bool) {
+		defer func() {
+			m.index, m.offset, m.state = 0, 0, STATE_NONE
+			m.buffer.Reset()
+			for _, pattern := range m.patterns {
+				pattern.Reset()
+			}
+		}()
+
+		for m.buffer.Len() > 0 {
+			state := m.state
+			pattern := m.patterns[state>>1]
+			index, length, ok := pattern.Finish(m.buffer.Bytes())
+			if index > 0 && !yield(pattern.Build(m.buffer, index, state)) {
+				return
+			}
+			if !ok {
+				return
+			}
+			m.state = state ^ 0b10
+			if !yield(pattern.Build(m.buffer, length, state+1)) {
+				return
+			}
+		}
+	}
+}
+
 func (m *matcher) Close() error {
 	m.patterns[0].Clear()
 	m.patterns[1].Clear()
@@ -245,6 +283,8 @@ type pattern interface {
 	// Match advance the Match index and offset to release the
 	// unmatched string in buffer ASAP.
 	Match(index int, offset int, s []byte) (newIndex int, newOffset int, ok bool)
+	Finish(s []byte) (index int, length int, ok bool)
+	Reset()
 
 	// Clear clean up the inner state of pattern
 	Clear()
@@ -264,6 +304,9 @@ type kmpPattern struct {
 var _ pattern = (*kmpPattern)(nil)
 
 func newKmpPattern(source string) *kmpPattern {
+	if source == "" {
+		panic("los: pattern must not match empty input")
+	}
 	computeLpsArray := func(pattern string) []int {
 		n := len(pattern)
 		array := make([]int, n)
@@ -283,6 +326,16 @@ func newKmpPattern(source string) *kmpPattern {
 	}
 	return &kmpPattern{computeLpsArray(source), len(source), source}
 }
+
+func (pat *kmpPattern) Finish(buffer []byte) (int, int, bool) {
+	index, length, ok := pat.Match(0, 0, buffer)
+	if !ok {
+		return len(buffer), 0, false
+	}
+	return index, length, true
+}
+
+func (pat *kmpPattern) Reset() {}
 
 func (pat *kmpPattern) Match(index int, offset int, buffer []byte) (int, int, bool) {
 	if offset == pat.length {
@@ -320,7 +373,6 @@ type regexPattern struct {
 	legex.Machine
 }
 
-// legex.Machine implement pattern
 var _ pattern = (*regexPattern)(nil)
 
 func newRegexPattern(pattern string, mode regexMode) *regexPattern {
@@ -333,11 +385,26 @@ func newRegexPattern(pattern string, mode regexMode) *regexPattern {
 	default:
 		panic("unreachable")
 	}
-	return &regexPattern{re.Get()}
+	pat := &regexPattern{re.Get()}
+	_, length, ok := pat.Finish(nil)
+	pat.Reset()
+	if ok && length == 0 {
+		pat.Close()
+		panic("los: pattern must not match empty input")
+	}
+	return pat
 }
 
 func (pat *regexPattern) Clear() {
 	pat.Close()
+}
+
+func (pat *regexPattern) Match(_, _ int, buffer []byte) (int, int, bool) {
+	return pat.Machine.Match(buffer)
+}
+
+func (pat *regexPattern) Finish(buffer []byte) (int, int, bool) {
+	return pat.Machine.Finish(buffer)
 }
 
 func (pat *regexPattern) Build(buffer *bytes.Buffer, n int, state State) Result {
@@ -345,9 +412,12 @@ func (pat *regexPattern) Build(buffer *bytes.Buffer, n int, state State) Result 
 		return textResult{state, buffer.Next(n)}
 	}
 
-	accum, matchcap := pat.Accum(), pat.MatchCap()
-	for i := range matchcap {
-		matchcap[i] -= accum
+	matchcap := pat.MatchCap()
+	start := matchcap[0]
+	for i, pos := range matchcap {
+		if pos >= 0 {
+			matchcap[i] = pos - start
+		}
 	}
 	pat.Reset()
 	return regexResult{state, buffer.Next(n), matchcap}

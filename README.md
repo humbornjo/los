@@ -62,9 +62,9 @@ regular expression semantics.
 ```go
 matcher := los.NewMatcher(
   los.NewPair(
-    "ab(.*)c",
+    "ab(.*?)c",
     "xyz",
-    los.WithRegexHead(REGEX_MODE_PERL),
+    los.WithRegexHead(los.REGEX_MODE_PERL),
   ),
 )
 defer matcher.Close()
@@ -87,8 +87,25 @@ for _, content := range contents {
   }
 }
 
-remains := matcher.Drain() // "ab"
+for result := range matcher.Finish() {
+  // Handle matches that depend on the end of the stream, plus any
+  // remaining unmatched content.
+  _ = result
+}
 ```
+
+## Streaming semantics
+
+`Match` treats the end of each input chunk as a soft boundary. A match is emitted only when later input cannot change
+the result selected by Go's leftmost-first regexp semantics. For example, greedy repetitions, `$`, `\z`, and word
+boundaries may remain buffered until lookahead arrives.
+
+Call `Finish` after the final chunk. It resolves end-of-text assertions, emits the final matched or unmatched results,
+and resets the matcher for a new logical stream. Use `Drain` instead when abandoning a stream: it returns the buffered
+text without applying final regex matching and resets the matcher.
+
+Head and tail patterns must consume at least one byte. `NewMatcher` rejects fixed or regex patterns that can match empty
+input because they cannot make progress in a streaming state machine.
 
 ## References
 

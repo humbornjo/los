@@ -16,20 +16,18 @@ var (
 )
 
 type Machine interface {
-	// Reset reset the inner state of Virtual Machine, it should be
-	// called after got a machine.
+	// Reset starts a new logical stream with the same regular expression.
 	Reset()
-	// Close restore the Virtual Machine resource back to the pool
-	// to improve memory allocation.
+	// Close returns the machine resources to the pool.
 	Close()
-	// Accum returns a pivot that records the total shift since
-	// last match. It is used to calibrate the index in matchcap.
-	Accum() int
-	// MatchCap return a clone slice with matched positions.
+	// MatchCap returns a copy of the most recent submatch positions.
 	MatchCap() []int
-	// Match try to match the compiled pattern against buf from
-	// index and with a prior knowledge of already matched offset.
-	Match(index int, offset int, buf []byte) (int, int, bool)
+	// Match searches the retained stream buffer. When no match is complete,
+	// index is the number of bytes safe to release and length is the number
+	// of bytes that must remain buffered.
+	Match(buf []byte) (index int, length int, ok bool)
+	// Finish performs the final search with a real end-of-text boundary.
+	Finish(buf []byte) (index int, length int, ok bool)
 }
 
 func (re *Regexp) Get() Machine {
@@ -41,7 +39,6 @@ func (re *Regexp) Get() Machine {
 		m = new(machineDefault)
 	}
 	m.re, m.p = re, re.prog
-	m.accum, m.matched, m.strict = 0, false, re.strict
 	if cap(m.matchcap) < re.matchcap {
 		m.matchcap = make([]int, re.matchcap)
 		for _, t := range m.pool {
@@ -62,5 +59,6 @@ func (re *Regexp) Get() Machine {
 		m.q0 = queue{make([]uint32, n), make([]entry, 0, n)}
 		m.q1 = queue{make([]uint32, n), make([]entry, 0, n)}
 	}
+	m.Reset()
 	return m
 }

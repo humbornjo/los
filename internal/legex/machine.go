@@ -4,263 +4,257 @@ import (
 	"math"
 	"regexp/syntax"
 	"slices"
+	"unicode/utf8"
 )
+
+const endOfChunk rune = utf8.MaxRune + 1
 
 var _ Machine = (*machineDefault)(nil)
 
-// A machineDefault holds all the state during an NFA simulation for p.
+// machineDefault is a resumable adaptation of Go's regexp NFA machine. Each
+// call replays the retained candidate bytes so matching stays independent of
+// how the stream was chunked. Bytes that cannot begin a future match are
+// released to the caller.
 type machineDefault struct {
-	re      *Regexp      // corresponding Regexp
-	p       *syntax.Prog // compiled program
-	q0, q1  queue        // two queues for runq, nextq
-	pool    []*thread    // pool of available threads
-	matched bool         // whether a match was found
+	re       *Regexp
+	p        *syntax.Prog
+	q0, q1   queue
+	pool     []*thread
+	matched  bool
+	matchcap []int
 
-	strict   bool
-	accum    int   // index accumulator to calibrate matchcap
-	matchcap []int // capture information for the match
+	begin    bool
+	previous rune
+	final    bool
+	frontier int
 }
 
 func (m *machineDefault) Reset() {
-	m.accum = 0
-	m.matched = false
 	m.clear(&m.q0)
 	m.clear(&m.q1)
+	m.matched = false
+	m.begin = true
+	m.previous = endOfText
 	for i := range m.matchcap {
 		m.matchcap[i] = -1
 	}
 }
 
 func (m *machineDefault) Close() {
-	defaultPool[m.re.mpool].Put(m)
+	pool := &defaultPool[m.re.mpool]
 	m.clear(&m.q0)
 	m.clear(&m.q1)
 	m.re, m.p = nil, nil
-}
-
-func (m *machineDefault) Accum() int {
-	return m.accum
+	pool.Put(m)
 }
 
 func (m *machineDefault) MatchCap() []int {
 	return slices.Clone(m.matchcap)
 }
 
-func (m *machineDefault) Match(index int, offset int, buf []byte) (int, int, bool) {
-	input := &inputBytes{buf}
-	// Machine will continue to match from index+offset, where the previous match stopped
-	//
-	// INFO: If match the full pattern,
-	// - true boolean value will be returned.
-	// - offset will be the length of the pattern matched.
-	// - content in buf before index will be the out-of-pattern string.
-	//
-	// INFO: If not match the full pattern,
-	// - false boolean value will be returned.
-	// - content in buf before index will be the out-of-pattern string.
-	// - machine will remember the new index, if the index changed in the next match, the collected match index will be
-	//   decreased by the difference as well.
-	idx, off, ok := m.match(input, index, offset)
-	if !ok {
-		if m.strict {
-			m.Reset()
-			return len(buf), 0, false
-		}
-
-		shift := math.MaxInt
-		for _, e := range m.q0.dense {
-			if e.t != nil {
-				shift = min(shift, e.t.cap[0]-m.accum)
-			}
-		}
-		if shift == math.MaxInt {
-			m.accum += idx
-			return idx, off, false
-		}
-		m.accum += shift
-		return index + shift, len(buf) - (index + shift), false
-	}
-	return m.matchcap[0], m.matchcap[1] - m.matchcap[0], true
+func (m *machineDefault) Match(buf []byte) (int, int, bool) {
+	return m.execute(buf, false)
 }
 
-// match runs the machine over the input starting at pos.
-// It reports whether a match was found.
-// If so, m.matchcap holds the submatch information.
-func (m *machineDefault) match(i input, index int, offset int) (int, int, bool) {
-	startCond := m.re.cond
+func (m *machineDefault) Finish(buf []byte) (int, int, bool) {
+	return m.execute(buf, true)
+}
 
-	// syntax.InstFail => ^syntax.EmptyOp(0), advance all
+func (m *machineDefault) execute(buf []byte, final bool) (int, int, bool) {
+	limit := 0
+	for limit < len(buf) && (final || utf8.FullRune(buf[limit:])) {
+		_, width := utf8.DecodeRune(buf[limit:])
+		limit += width
+	}
+
+	m.clear(&m.q0)
+	m.clear(&m.q1)
+	m.matched = false
+	for i := range m.matchcap {
+		m.matchcap[i] = -1
+	}
+	m.final = final
+	m.frontier = math.MaxInt
+
+	m.match(&inputBytes{str: buf[:limit]})
+	if m.matched {
+		return m.matchcap[0], m.matchcap[1] - m.matchcap[0], true
+	}
+
+	if final || m.frontier == math.MaxInt {
+		m.frontier = limit
+	}
+	if m.frontier > 0 {
+		m.previous, _ = utf8.DecodeLastRune(buf[:m.frontier])
+		m.begin = false
+	}
+	return m.frontier, len(buf) - m.frontier, false
+}
+
+// match follows the standard library's ordered NFA execution. At the current
+// end of available input it also records the earliest live thread, which is
+// the first byte that must remain buffered for the next stream chunk.
+func (m *machineDefault) match(i *inputBytes) {
+	startCond := m.re.cond
 	if startCond == ^syntax.EmptyOp(0) {
-		return i.length(), 0, false
+		return
 	}
 
 	runq, nextq := &m.q0, &m.q1
-
-	r, r1 := endOfText, endOfText // nolint: ineffassign
-	width, width1 := 0, 0
-	r, width = i.next(index + offset)
-	if r != endOfText {
-		r1, width1 = i.next(index + offset + width)
+	boundary := endOfChunk
+	if m.final {
+		boundary = endOfText
 	}
-
-	// TODO: Trying to figure out what flag is
-	var flag lazyFlag
-	if offset == 0 {
-		flag = newLazyFlag(-1, r)
+	pos := 0
+	r, r1 := boundary, boundary
+	width, width1 := 0, 0
+	r, width = i.step(pos)
+	if r != endOfText {
+		r1, width1 = i.step(pos + width)
+		if r1 == endOfText {
+			r1 = boundary
+		}
 	} else {
-		flag = i.context(index + offset)
+		r = boundary
+	}
+	flag := newLazyFlag(m.previous, r)
+	if m.begin {
+		flag = newLazyFlag(endOfText, r)
 	}
 
 	for {
-		// If the curr queue has no pending threads, then,
-		//
-		// 1. All thread failed
-		// 2. Just start the first match
-		//
-		// Either way, we need to match from the beginning.
-		//
-		// INFO: Here will derive a change from the std lib. when
-		// matching from the beginning, we always try to match the
-		// full prefix before add any thread. So the logic here is
-		// pretty easy, just record the position of the matching
-		// progress against the prefix. If the prefix can be matched,
-		// thread will be added to the queue so that the following
-		// content can be matched.
-		//
-		// WARN: Currently this if branch wont work because onepass
-		// is disabled. `m.re.prefix` is always empty.
 		if len(runq.dense) == 0 {
-			// What is needed here is a offset, which corresponds to
-			// the one in the outie package los, indicating the matched
-			// length from the match start point.
-			//
-			// E.g. with pattern "abc", if the match is "aab", then the
-			// offset is 2. Since it match the "ab".
-
-			// Have match; finished exploring alternatives.
+			if startCond&syntax.EmptyBeginText != 0 && (!m.begin || pos != 0) {
+				break
+			}
 			if m.matched {
 				break
 			}
-
-			// When prefix is already been matched, just goto weave
-			if len(m.re.prefix) == 0 {
-				goto weave // time to add some threads
-			}
-			index, offset = i.prologue(m.re, index, offset)
-			if offset == len(m.re.prefix) {
-				offset = 0
-				r, width = i.next(index)
-				r1, width1 = i.next(index + width)
-				flag = newLazyFlag(-1, r)
-				goto weave // time to add some threads
-			}
-
-			// Dude you are so fucked, not even finish prefix matching. Maybe next time.
-			return index, offset, false
 		}
-
-	weave: // Already in the middle of matching.
 		if !m.matched {
-			m.add(runq, uint32(m.p.Start), index+offset, nil, &flag, nil)
+			if len(m.matchcap) > 0 {
+				m.matchcap[0] = pos
+			}
+			m.add(runq, uint32(m.p.Start), pos, m.matchcap, &flag, nil)
 		}
-
 		if width == 0 {
+			for _, entry := range runq.dense {
+				if entry.t != nil && len(entry.t.cap) > 0 {
+					m.frontier = min(m.frontier, entry.t.cap[0])
+				}
+			}
+			if m.final {
+				flag = newLazyFlag(r, r1)
+				m.step(runq, nextq, pos, pos, endOfText, &flag)
+			} else {
+				m.acceptSoftBoundary(runq, pos)
+			}
 			break
 		}
-
 		flag = newLazyFlag(r, r1)
-
-		m.step(runq, nextq, index+offset, index+offset+width, r, &flag)
-		offset += width
+		m.step(runq, nextq, pos, pos+width, r, &flag)
 		if len(m.matchcap) == 0 && m.matched {
-			// Found a match and not paying attention to where it is, so any match will do.
 			break
+		}
+		pos += width
+		r, width = r1, width1
+		if width == 0 {
+			r = boundary
+		}
+		r1, width1 = boundary, 0
+		if width > 0 {
+			r1, width1 = i.step(pos + width)
+			if r1 == endOfText {
+				r1 = boundary
+			}
 		}
 		runq, nextq = nextq, runq
-
-		if len(runq.dense) == 0 {
-			index, offset = index+offset, 0
-			r, width = i.next(index)
-			if r != endOfText {
-				r1, width1 = i.next(index + width)
-			}
-			flag = newLazyFlag(-1, r)
-			continue
-		}
-
-		r, width = r1, width1
-		if r != endOfText {
-			r1, width1 = i.next(index + offset + width)
-		}
 	}
-
-	m.q0, m.q1 = *runq, *nextq
-	return index, offset, m.matched
+	m.clear(runq)
+	m.clear(nextq)
 }
 
-// clear frees all threads on the thread queue.
+func (m *machineDefault) acceptSoftBoundary(q *queue, pos int) {
+	for j, entry := range q.dense {
+		if entry.t == nil {
+			continue
+		}
+		if entry.t.inst.Op != syntax.InstMatch {
+			m.matched = false
+			return
+		}
+		if m.re.longest {
+			start := entry.t.cap[0]
+			for _, extension := range q.dense[j+1:] {
+				if extension.t != nil && extension.t.inst.Op != syntax.InstMatch &&
+					len(extension.t.cap) > 0 && extension.t.cap[0] == start {
+					m.matched = false
+					return
+				}
+			}
+		}
+		entry.t.cap[1] = pos
+		copy(m.matchcap, entry.t.cap)
+		m.matched = true
+		return
+	}
+}
+
 func (m *machineDefault) clear(q *queue) {
-	for _, d := range q.dense {
-		if d.t != nil {
-			m.pool = append(m.pool, d.t)
+	for _, entry := range q.dense {
+		if entry.t != nil {
+			m.pool = append(m.pool, entry.t)
 		}
 	}
 	q.dense = q.dense[:0]
 }
 
-// step executes one step of the machine, running each of the threads
-// on runq and appending new threads to nextq.
-// The step processes the rune c (which may be endOfText),
-// which starts at position pos and ends at nextPos.
-// nextCond gives the setting for the empty-width flags after c.
+// step mirrors regexp.machine.step. Queue order preserves Perl leftmost-first
+// priority; POSIX mode continues lower-priority threads to find the longest
+// leftmost match.
 func (m *machineDefault) step(runq, nextq *queue, pos, nextPos int, c rune, nextCond *lazyFlag) {
 	longest := m.re.longest
 	for j := 0; j < len(runq.dense); j++ {
-		d := &runq.dense[j]
-		t := d.t
+		entry := &runq.dense[j]
+		t := entry.t
 		if t == nil {
 			continue
 		}
-
-		// TODO: Delete this block [Longest Not Planned]
 		if longest && m.matched && len(t.cap) > 0 && m.matchcap[0] < t.cap[0] {
 			m.pool = append(m.pool, t)
 			continue
 		}
 
-		i := t.inst
+		inst := t.inst
 		add := false
-		switch i.Op {
+		switch inst.Op {
 		default:
 			panic("bad inst")
-
-		// case syntax.InstMatch:
-		// 	if len(t.cap) > 0 && (!longest || !m.matched || m.matchcap[1] < pos) {
-		// 		t.cap[1] = pos
-		// 		copy(m.matchcap, t.cap)
-		// 	}
-		// 	if !longest {
-		// 		// First-match mode: cut off all lower-priority threads.
-		// 		for _, d := range runq.dense[j+1:] {
-		// 			if d.t != nil {
-		// 				m.pool = append(m.pool, d.t)
-		// 			}
-		// 		}
-		// 		runq.dense = runq.dense[:0]
-		// 	}
-		// 	m.matched = true
-
+		case syntax.InstMatch:
+			if len(t.cap) > 0 && (!longest || !m.matched || m.matchcap[1] < pos) {
+				t.cap[1] = pos
+				copy(m.matchcap, t.cap)
+			}
+			if !longest {
+				for _, lower := range runq.dense[j+1:] {
+					if lower.t != nil {
+						m.pool = append(m.pool, lower.t)
+					}
+				}
+				runq.dense = runq.dense[:0]
+			}
+			m.matched = true
 		case syntax.InstRune:
-			add = i.MatchRune(c)
+			add = inst.MatchRune(c)
 		case syntax.InstRune1:
-			add = c == i.Rune[0]
+			add = c == inst.Rune[0]
 		case syntax.InstRuneAny:
 			add = true
 		case syntax.InstRuneAnyNotNL:
 			add = c != '\n'
 		}
 		if add {
-			t = m.add(nextq, i.Out, nextPos, t.cap, nextCond, t)
+			t = m.add(nextq, inst.Out, nextPos, t.cap, nextCond, t)
 		}
 		if t != nil {
 			m.pool = append(m.pool, t)
@@ -269,10 +263,8 @@ func (m *machineDefault) step(runq, nextq *queue, pos, nextPos int, c rune, next
 	runq.dense = runq.dense[:0]
 }
 
-// add adds an entry to q for pc, unless the q already has such an entry.
-// It also recursively adds an entry for all instructions reachable from pc by following
-// empty-width conditions satisfied by cond.  pos gives the current position
-// in the input.
+// add mirrors regexp.machine.add. It follows epsilon transitions immediately
+// and adds at most one thread for each instruction while preserving priority.
 func (m *machineDefault) add(q *queue, pc uint32, pos int, cap []int, cond *lazyFlag, t *thread) *thread {
 again:
 	if pc == 0 {
@@ -284,105 +276,75 @@ again:
 
 	j := len(q.dense)
 	q.dense = q.dense[:j+1]
-	d := &q.dense[j]
-	d.t = nil
-	d.pc = pc
+	entry := &q.dense[j]
+	entry.t = nil
+	entry.pc = pc
 	q.sparse[pc] = uint32(j)
 
-	i := &m.p.Inst[pc]
-	switch i.Op {
+	inst := &m.p.Inst[pc]
+	switch inst.Op {
 	default:
 		panic("unhandled")
 	case syntax.InstFail:
-		// nothing
 	case syntax.InstAlt, syntax.InstAltMatch:
-		t = m.add(q, i.Out, pos, cap, cond, t)
-		pc = i.Arg
+		t = m.add(q, inst.Out, pos, cap, cond, t)
+		pc = inst.Arg
 		goto again
 	case syntax.InstEmptyWidth:
-		if cond.match(syntax.EmptyOp(i.Arg)) {
-			pc = i.Out
+		op := syntax.EmptyOp(inst.Arg)
+		if !m.final && rune(*cond) == endOfChunk &&
+			op&(syntax.EmptyEndLine|syntax.EmptyEndText|syntax.EmptyWordBoundary|syntax.EmptyNoWordBoundary) != 0 {
+			if len(cap) > 0 {
+				m.frontier = min(m.frontier, cap[0])
+			}
+		} else if cond.match(op) {
+			pc = inst.Out
 			goto again
 		}
 	case syntax.InstNop:
-		pc = i.Out
+		pc = inst.Out
 		goto again
 	case syntax.InstCapture:
-		if int(i.Arg) < len(cap) {
-			opos := cap[i.Arg]
-			cap[i.Arg] = pos
-			m.add(q, i.Out, pos, cap, cond, nil)
-			cap[i.Arg] = opos
+		if int(inst.Arg) < len(cap) {
+			old := cap[inst.Arg]
+			cap[inst.Arg] = pos
+			m.add(q, inst.Out, pos, cap, cond, nil)
+			cap[inst.Arg] = old
 		} else {
-			pc = i.Out
+			pc = inst.Out
 			goto again
 		}
-	case syntax.InstMatch:
+	case syntax.InstMatch, syntax.InstRune, syntax.InstRune1, syntax.InstRuneAny, syntax.InstRuneAnyNotNL:
 		if t == nil {
-			t = m.alloc(i)
-			t.cap[0] = pos + m.accum
-			copy(t.cap, cap)
-		}
-		longest := m.re.longest
-		// TODO: Delete the condition after '&&' since I do not want to support Longest here
-		if len(t.cap) > 0 && (!longest || !m.matched || m.matchcap[1] < pos) {
-			t.cap[0], t.cap[1] = t.cap[0]-m.accum, pos
-			copy(m.matchcap, t.cap)
-		}
-		if !longest {
-			// First-match mode: cut off all lower-priority threads.
-			for _, d := range q.dense[j+1:] {
-				if d.t != nil {
-					m.pool = append(m.pool, d.t)
-				}
-			}
-			// q.dense = q.dense[:0]
-		}
-		m.matched = true
-
-	case syntax.InstRune, syntax.InstRune1, syntax.InstRuneAny, syntax.InstRuneAnyNotNL:
-		if t == nil {
-			t = m.alloc(i)
-			t.cap[0] = pos + m.accum
-			copy(t.cap, cap)
+			t = m.alloc(inst)
 		} else {
-			t.inst = i
+			t.inst = inst
 		}
-		d.t = t
+		if len(cap) > 0 && &t.cap[0] != &cap[0] {
+			copy(t.cap, cap)
+		}
+		entry.t = t
 		t = nil
 	}
 	return t
 }
 
-// THE CODE BELOW RETAIN ----------------------------------------
-
-// A queue is a 'sparse array' holding pending threads of execution.
-// See https://research.swtch.com/2008/03/using-uninitialized-memory-for-fun-and.html
 type queue struct {
 	sparse []uint32
 	dense  []entry
 }
 
-// An entry is an entry on a queue.
-// It holds both the instruction pc and the actual thread.
-// Some queue entries are just place holders so that the machine
-// knows it has considered that pc. Such entries have t == nil.
 type entry struct {
 	pc uint32
 	t  *thread
 }
 
-// A thread is the state of a single path through the machine:
-// an instruction and a corresponding capture array.
-// See https://swtch.com/~rsc/regexp/regexp2.html
 type thread struct {
 	inst *syntax.Inst
 	cap  []int
 }
 
-// alloc allocates a new thread with the given instruction.
-// It uses the free pool if possible.
-func (m *machineDefault) alloc(i *syntax.Inst) *thread {
+func (m *machineDefault) alloc(inst *syntax.Inst) *thread {
 	var t *thread
 	if n := len(m.pool); n > 0 {
 		t = m.pool[n-1]
@@ -391,15 +353,10 @@ func (m *machineDefault) alloc(i *syntax.Inst) *thread {
 		t = new(thread)
 		t.cap = make([]int, len(m.matchcap), cap(m.matchcap))
 	}
-	t.inst = i
+	t.inst = inst
 	return t
 }
 
-// A lazyFlag is a lazily-evaluated syntax.EmptyOp,
-// for checking zero-width flags like ^ $ \A \z \B \b.
-// It records the pair of relevant runes and does not
-// determine the implied flags until absolutely necessary
-// (most of the time, that means never).
 type lazyFlag uint64
 
 func newLazyFlag(r1, r2 rune) lazyFlag {

@@ -93,6 +93,7 @@ func TestLos_Matcher_Regex(t *testing.T) {
 		contents        []string
 		expectedResults [][]Result
 		drainedContent  string
+		expectedFinal   []Result
 	}{
 		// {
 		// 	name:            "pass through empty content",
@@ -107,12 +108,12 @@ func TestLos_Matcher_Regex(t *testing.T) {
 		// 	drainedContent:  "abABC",         // Remaining unmatched content
 		// },
 		{
-			name:     "single complete head match",
-			contents: []string{"abABCc"},
-			expectedResults: [][]Result{{
+			name:            "single complete head match",
+			contents:        []string{"abABCc"},
+			expectedResults: [][]Result{nil},
+			expectedFinal: []Result{
 				regexResult{STATE_HEAD, []byte("abABCc"), []int{0, 6, 2, 5}},
-			}},
-			drainedContent: "", // All content matched
+			},
 		},
 		// {
 		// 	name:     "multiple contents with complete matches",
@@ -155,8 +156,11 @@ func TestLos_Matcher_Regex(t *testing.T) {
 				require.Equal(t, expected, got)
 			}
 
-			drainedContent := matcher.Drain()
-			require.Equal(t, tt.drainedContent, drainedContent)
+			if tt.expectedFinal != nil {
+				require.Equal(t, tt.expectedFinal, slices.Collect(matcher.Finish()))
+			} else {
+				require.Equal(t, tt.drainedContent, matcher.Drain())
+			}
 		})
 	}
 }
